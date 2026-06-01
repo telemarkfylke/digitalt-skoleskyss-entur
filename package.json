@@ -1,0 +1,42 @@
+{
+  "name": "digitalt-busskort",
+  "version": "1.0.0",
+  "description": "Node.js TypeScript project with SQL Server connectivity",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "monitor-orders": "ts-node src/monitor-student-orders.ts",
+    "test-entur": "ts-node src/test-entur-connection.ts",
+    "test-db-connection": "ts-node src/test-database-connection.ts",
+    "sync-entur": "ts-node src/sync-students-to-entur.ts",
+    "sync-entur-live-all": "ts-node src/sync-students-to-entur.ts --method all --dry-run false",
+    "sync-entur-live-single": "ts-node src/sync-students-to-entur.ts --method single --dry-run false",
+    "sync-entur-dry-all": "ts-node src/sync-students-to-entur.ts --method all --dry-run true",
+    "sync-entur-dry-single": "ts-node src/sync-students-to-entur.ts --method single --dry-run true",
+    "sync-entur-validate": "ts-node src/sync-students-to-entur.ts --validate",
+    "sync-entur-validate-single": "ts-node src/sync-students-to-entur.ts --validate --method single",
+    "sync-entur-validate-all": "ts-node src/sync-students-to-entur.ts --validate --method all",
+    "watch": "tsc --watch",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "nodejs",
+    "typescript",
+    "sqlserver"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vestfoldfylke/loglady": "^1.5.3",
+    "dotenv": "^16.3.1",
+    "mssql": "^12.2.1"
+  },
+  "devDependencies": {
+    "@types/mssql": "^9.1.5",
+    "@types/node": "^20.10.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

@@ -14,6 +14,11 @@ export interface PostSkoleskyssRequest {
       | { groupOfTariffZoneId: string; }
     >;
   };
+  calendarId?: string;
+  timeBands?: {
+    startTime: number;
+    endTime: number;
+  };
   studentDetails?: {
     firstName?: string;
     surname?: string;
@@ -213,6 +218,8 @@ export class EnturApiService {
       | { fromZoneId: string; toZoneId: string; }
       | { groupOfTariffZoneId: string; } // ZoneId for alle soner: TEL:GroupOfTariffZones:1
     >;
+    calendarId?: string;
+    timeBands?: { startTime: number; endTime: number };
   }): PostSkoleskyssRequest {
     // Parse phone number
     let phoneDetails = undefined;
@@ -252,6 +259,8 @@ export class EnturApiService {
         endDate: studentData.endDate, // yyyy-mm-dd
         zones: studentData.zones
       },
+      calendarId: studentData.calendarId,
+      timeBands: studentData.timeBands,
       studentDetails: sanitizedStudentDetails
     };
   }

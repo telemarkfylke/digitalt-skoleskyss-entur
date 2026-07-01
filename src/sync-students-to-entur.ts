@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { SyncManager, SyncOptions } from './sync-manager';
+import { QueueService } from './services/queue.service';
 import { calculateSchoolYear, formatSchoolYear } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 
@@ -7,7 +8,7 @@ import { appLogger, flushLogs } from './services/logger.service';
 dotenv.config();
 
 interface SyncConfig {
-  method: 'all' | 'filtered' | 'single';
+  method: 'all' | 'filtered' | 'single' | 'queue';
   classes?: string[];
   gradeIds?: string[];
   studentId?: string;
@@ -17,6 +18,9 @@ interface SyncConfig {
   dryRun?: boolean;
   batchSize?: number;
   logLevel?: 'error' | 'warn' | 'info' | 'debug';
+  queueLimit?: number;
+  queueFilePath?: string;
+  rebuildQueue?: boolean;
 }
 
 const getFirstDefinedEnv = (...keys: string[]): string | undefined => {
@@ -35,7 +39,7 @@ const getSyncConfig = (): SyncConfig => {
   // npm can expose CLI args as npm_config_* environment variables.
   // This makes commands like `npm run sync-entur -- --dry-run false` work
   // even if npm/powershell strips the original flag names from process.argv.
-  const method = (getFirstDefinedEnv('SYNC_METHOD', 'npm_config_method') as 'all' | 'filtered' | 'single') || 'all';
+  const method = (getFirstDefinedEnv('SYNC_METHOD', 'npm_config_method') as 'all' | 'filtered' | 'single' | 'queue') || 'all';
   const classes = (getFirstDefinedEnv('SYNC_CLASSES', 'npm_config_classes') || '').split(',').map(v => v.trim()).filter(Boolean);
   const gradeIds = (getFirstDefinedEnv('SYNC_GRADE_IDS', 'npm_config_grade_ids') || '').split(',').map(v => v.trim()).filter(Boolean);
   const studentId = getFirstDefinedEnv('SYNC_STUDENT_ID', 'npm_config_student_id');
@@ -45,6 +49,11 @@ const getSyncConfig = (): SyncConfig => {
   const batchSize = parseInt(getFirstDefinedEnv('SYNC_BATCH_SIZE', 'npm_config_batch_size') || '10', 10);
   const logLevel = (getFirstDefinedEnv('SYNC_LOG_LEVEL', 'npm_config_log_level') as 'error' | 'warn' | 'info' | 'debug') || 'debug';
 
+  const queueLimit = parseInt(getFirstDefinedEnv('SYNC_QUEUE_LIMIT', 'npm_config_queue_limit') || '10', 10);
+  const queueFilePath = getFirstDefinedEnv('SYNC_QUEUE_FILE', 'npm_config_queue_file') || './queue/sync-queue.json';
+  const rebuildQueueValue = getFirstDefinedEnv('SYNC_QUEUE_REBUILD', 'npm_config_rebuild_queue');
+  const rebuildQueue = rebuildQueueValue === 'true';
+
   return {
     method,
     classes,
@@ -53,7 +62,10 @@ const getSyncConfig = (): SyncConfig => {
     studentIds,
     dryRun,
     batchSize,
-    logLevel
+    logLevel,
+    queueLimit,
+    queueFilePath,
+    rebuildQueue
   };
 };
 
@@ -132,6 +144,39 @@ async function syncStudentsToEntur(config?: SyncConfig) {
         );
         break;
         
+      case 'queue': {
+        const queueFilePath = syncConfig.queueFilePath || './queue/sync-queue.json';
+        const queueLimit = syncConfig.queueLimit ?? 10;
+        const queueService = new QueueService(queueFilePath, 3);
+        queueService.loadQueue();
+
+        const needsRebuild = syncConfig.rebuildQueue || !queueService.hasQueueFile();
+
+        if (needsRebuild) {
+          appLogger.info(
+            syncConfig.rebuildQueue
+              ? 'Rebuilding queue (--rebuild-queue requested)...'
+              : 'Queue file not found — building from database for the first time...'
+          );
+          const allStudents = await syncManager.getAllStudentsForQueue(startYear, endYear);
+          queueService.buildQueue(allStudents);
+        }
+
+        const stats = queueService.getStats();
+        appLogger.info(
+          `Queue status: ${stats.total} total, ${stats.pending} pending, ${stats.sent} sent, ${stats.failed} permanently failed`
+        );
+        appLogger.info(`Queue limit: ${queueLimit === 0 ? 'all pending' : queueLimit}`);
+
+        result = await syncManager.syncFromQueue(queueService, queueLimit);
+
+        const finalStats = queueService.getStats();
+        appLogger.info(
+          `Queue after run: ${finalStats.pending} pending, ${finalStats.sent} sent, ${finalStats.failed} permanently failed`
+        );
+        break;
+      }
+
       default:
         throw new Error(`Unknown sync method: ${syncConfig.method}`);
     }
@@ -238,9 +283,9 @@ function parseCommandLineArgs(): SyncConfig | null {
     appLogger.debug('DEBUG: Detected positional arguments from npm script');
     const method = args[0];
     
-    if (['all', 'filtered', 'single'].includes(method)) {
+    if (['all', 'filtered', 'single', 'queue'].includes(method)) {
       const config: SyncConfig = {
-        method: method as 'all' | 'filtered' | 'single'
+        method: method as 'all' | 'filtered' | 'single' | 'queue'
       };
       
       // If method is single and we have a student ID
@@ -315,8 +360,8 @@ function parseCommandLineArgs(): SyncConfig | null {
       case '--method':
         const method = args[i + 1];
         appLogger.debug(`DEBUG: Found --method flag, next value: "${method}"`);
-        if (['all', 'filtered', 'single'].includes(method)) {
-          config.method = method as 'all' | 'filtered' | 'single';
+        if (['all', 'filtered', 'single', 'queue'].includes(method)) {
+          config.method = method as 'all' | 'filtered' | 'single' | 'queue';
           appLogger.debug(`DEBUG: Set config.method to: "${config.method}"`);
           
           // Special case: if method is 'single' and the next argument after that is not a flag, 
@@ -381,11 +426,22 @@ function parseCommandLineArgs(): SyncConfig | null {
         i++;
         break;
         
+      case '--queue-limit':
+        const ql = parseInt(args[i + 1]);
+        if (!isNaN(ql) && ql >= 0) config.queueLimit = ql;
+        i++;
+        break;
+
+      case '--rebuild-queue':
+        config.rebuildQueue = args[i + 1] !== 'false';
+        i++;
+        break;
+
       case '--start-year':
         config.startYear = args[i + 1];
         i++;
         break;
-        
+
       case '--end-year':
         config.endYear = args[i + 1];
         i++;

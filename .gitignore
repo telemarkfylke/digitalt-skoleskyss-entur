@@ -92,6 +92,9 @@ dist
 tmp/
 temp/
 
+# Queue state (runtime data, not for version control)
+queue/
+
 # Editor directories and files
 .vscode/
 .idea/

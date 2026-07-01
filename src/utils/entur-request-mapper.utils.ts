@@ -1,6 +1,7 @@
 import { EnturApiService, PostSkoleskyssRequest } from '../services/entur-skoleskyss.service';
 import { appLogger } from '../services/logger.service';
 import { formatPhoneNumberForEntur } from './entur-phonenumer.utils';
+import { getFareContractConfig } from '../config/fare-contract-config';
 
 export interface EnturMappableStudentRecord {
   OrdersId: string | number;
@@ -60,6 +61,8 @@ export const mapStudentRecordToEnturRequest = (
     );
   }
 
+  const fareConfig = getFareContractConfig(record.SchoolId, record.SchoolClassName);
+
   return enturService.createSkoleskyssRequest({
     studentId: String(record.StudentId),
     applicationId: String(record.OrdersId),
@@ -74,6 +77,8 @@ export const mapStudentRecordToEnturRequest = (
     phoneCountryCode: '+47',
     startDate: toIsoDate(record.StartDate),
     endDate: effectiveEndDate,
-    zones: [{ groupOfTariffZoneId: 'TEL:GroupOfTariffZones:1' }]
+    zones: [{ groupOfTariffZoneId: 'TEL:GroupOfTariffZones:1' }],
+    calendarId: fareConfig.calendarId || undefined,
+    timeBands: fareConfig.timeBands
   });
 };

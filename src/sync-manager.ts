@@ -1,6 +1,7 @@
 import { DatabaseService } from './services/database.service';
 import { StudentService } from './services/student.service';
 import { EnturApiService, PostSkoleskyssRequest } from './services/entur-skoleskyss.service';
+import { QueueService } from './services/queue.service';
 import { appLogger } from './services/logger.service';
 import { StudentWithDetails } from './types/user.types';
 import { calculateSchoolYear, mapStudentRecordToEnturRequest } from './utils';
@@ -235,7 +236,7 @@ export class SyncManager {
     return result;
   }
 
-  private async processSingleBatch(students: StudentWithDetails[]): Promise<{
+  protected async processSingleBatch(students: StudentWithDetails[]): Promise<{
     successCount: number;
     failedCount: number;
     skippedCount: number;
@@ -307,6 +308,94 @@ export class SyncManager {
       }
     }
 
+    return result;
+  }
+
+  async getAllStudentsForQueue(startYear: string, endYear: string): Promise<StudentWithDetails[]> {
+    try {
+      await this.db.connect();
+      return await this.studentService.getVideregaaendeStudents(startYear, endYear);
+    } finally {
+      await this.db.disconnect();
+    }
+  }
+
+  async syncFromQueue(queueService: QueueService, limit: number): Promise<SyncResult> {
+    const startTime = Date.now();
+    const result: SyncResult = {
+      totalStudents: 0,
+      successCount: 0,
+      failedCount: 0,
+      skippedCount: 0,
+      errors: [],
+      duration: 0,
+    };
+
+    const entries = queueService.getNextBatch(limit);
+    result.totalStudents = entries.length;
+
+    if (entries.length === 0) {
+      appLogger.info('Queue has no pending entries, nothing to sync');
+      result.duration = Date.now() - startTime;
+      return result;
+    }
+
+    appLogger.info('Processing {EntryCount} queue entries', entries.length);
+
+    const currentSchoolYear = calculateSchoolYear();
+    const startYear = currentSchoolYear.graduationYear;
+    const endYear = (currentSchoolYear.endYear + 1).toString();
+
+    try {
+      await this.db.connect();
+      const enturConnected = await this.enturService.testConnection();
+      if (!enturConnected) throw new Error('Failed to connect to Entur API');
+
+      for (const entry of entries) {
+        try {
+          const students = await this.studentService.getSingleStudent(startYear, endYear, entry.studentId);
+
+          if (students.length === 0) {
+            const msg = `Student ${entry.studentId} not found in DB for current school year`;
+            queueService.markFailed(entry.ordersId, msg);
+            queueService.saveQueue();
+            result.failedCount++;
+            result.errors.push(`[${entry.ordersId}] ${msg}`);
+            continue;
+          }
+
+          const batchResult = await this.processSingleBatch(students);
+          result.successCount += batchResult.successCount;
+          result.failedCount += batchResult.failedCount;
+          result.skippedCount += batchResult.skippedCount;
+          result.errors.push(...batchResult.errors);
+
+          if (batchResult.failedCount === 0 && batchResult.successCount > 0) {
+            queueService.markSent(entry.ordersId);
+          } else {
+            const errMsg = batchResult.errors[0] ?? 'processSingleBatch reported failure';
+            queueService.markFailed(entry.ordersId, errMsg);
+          }
+        } catch (err: any) {
+          queueService.markFailed(entry.ordersId, err.message);
+          result.failedCount++;
+          result.errors.push(`[${entry.ordersId}] ${err.message}`);
+        }
+
+        queueService.saveQueue();
+      }
+    } finally {
+      await this.db.disconnect();
+      result.duration = Date.now() - startTime;
+    }
+
+    const stats = queueService.getStats();
+    appLogger.info(
+      'Queue sync done. Pending: {Pending}, Sent: {Sent}, Failed: {Failed}',
+      stats.pending,
+      stats.sent,
+      stats.failed
+    );
     return result;
   }
 

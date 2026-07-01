@@ -6,6 +6,7 @@ import { CustomQueryMonitor } from './services/custom-query-monitor.service';
 import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, mapStudentRecordToEnturRequest } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
+import { QueueService } from './services/queue.service';
 
 dotenv.config();
 
@@ -226,6 +227,9 @@ async function monitorActiveStudentOrders() {
     await dbService.connect();
     appLogger.info('Database connected (read-only)');
 
+    const queueService = new QueueService(process.env.SYNC_QUEUE_FILE ?? './queue/sync-queue.json');
+    queueService.loadQueue();
+
     // Set up event handlers
     queryMonitor.on('change', async (change) => {
       try {
@@ -333,7 +337,36 @@ async function monitorActiveStudentOrders() {
         );
       };
 
-      newFilter.filtered.forEach((record) => enqueue('new', record));
+      // New records are added to the queue for rate-limited batch processing by the scheduler.
+      for (const record of newFilter.filtered) {
+        await writeJsonLine(AUDIT_LOG_FILE, {
+          timestamp: new Date().toISOString(),
+          level: 'info',
+          event: 'change_detected',
+          changeType: 'new',
+          studentId: record.StudentId,
+          orderId: record.OrdersId,
+          student: {
+            firstName: record.StudentName,
+            middleName: record.StudentMiddleName,
+            lastName: record.StudentLastName,
+            schoolName: record.SchoolName,
+            className: record.SchoolClassName,
+            email: record.EmailAddress,
+          },
+        });
+        const wasAdded = queueService.addEntry({
+          ordersId: String(record.OrdersId),
+          studentId: String(record.StudentId),
+          startDate: String(record.StartDate),
+        });
+        if (wasAdded) summary.newOrders++;
+      }
+      if (newFilter.filtered.length > 0) {
+        appLogger.info('{Count} new student(s) added to queue for scheduled processing', newFilter.filtered.length);
+      }
+
+      // Updates and removals go directly to Entur (immediate, not rate-limited).
       updatedFilter.filtered.forEach((record) => enqueue('updated', record));
       removedFilter.filtered.forEach((record) => enqueue('removed', record));
 
@@ -392,6 +425,32 @@ async function monitorActiveStudentOrders() {
       // In the future if we start to use zones, we need to monitor changes in the zones fiels (currently not needed)
       compareColumns: ['OverridesOrderId', 'StartDate', 'EndDate', 'StudentName', 'StudentMiddleName', 'StudentLastName', 'PhoneNumber', 'EmailAddress', 'SchoolId', 'SchoolName', 'SchoolClassId', 'SchoolClassName', 'SchoolGradeId', 'PrimaryStatus'] // Monitor these columns for changes
     };
+
+    // Startup reconciliation: catch any records added to the DB while the monitor was down.
+    // CustomQueryMonitor silently establishes a baseline on first poll, so records that arrived
+    // during downtime would otherwise never emit a NEW_RECORDS event.
+    try {
+      const currentRecords = await queryMonitor.getCurrentResults(studentOrdersConfig);
+      let reconciled = 0;
+      for (const record of currentRecords) {
+        const wasAdded = queueService.addEntry({
+          ordersId: String(record.OrdersId),
+          studentId: String(record.StudentId),
+          startDate: String(record.StartDate),
+        });
+        if (wasAdded) reconciled++;
+      }
+      appLogger.info(
+        'Queue reconciliation on startup: {Reconciled} new entries added ({Total} DB records checked)',
+        reconciled,
+        currentRecords.length
+      );
+    } catch (error) {
+      appLogger.warn(
+        'Queue reconciliation failed — monitor will still start: {ErrorMessage}',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
 
     // Start monitoring
     queryMonitor.startMonitoring(studentOrdersConfig);

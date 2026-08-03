@@ -110,7 +110,10 @@ export class QueueService {
     return limit === 0 ? pending : pending.slice(0, limit);
   }
 
+  // Reloads from disk first so concurrent writes (monitor + scheduler) don't overwrite each other.
   markSent(ordersId: string): void {
+    this.loadQueue();
+
     const entry = this.queue.entries.find((e) => e.ordersId === ordersId);
     if (!entry) {
       appLogger.warn('markSent: ordersId {OrdersId} not found in queue', ordersId);
@@ -119,13 +122,18 @@ export class QueueService {
     entry.status = 'sent';
     entry.processedAt = new Date().toISOString();
     this.queue.lastRunAt = entry.processedAt;
+    this.saveQueue();
   }
 
-  markFailed(ordersId: string, error: string): void {
+  // Reloads from disk first so concurrent writes (monitor + scheduler) don't overwrite each other.
+  // Returns true if the entry is now permanently failed (just crossed maxRetries).
+  markFailed(ordersId: string, error: string): boolean {
+    this.loadQueue();
+
     const entry = this.queue.entries.find((e) => e.ordersId === ordersId);
     if (!entry) {
       appLogger.warn('markFailed: ordersId {OrdersId} not found in queue', ordersId);
-      return;
+      return false;
     }
     entry.retryCount++;
     entry.errorMessage = error;
@@ -140,6 +148,8 @@ export class QueueService {
       );
     }
     this.queue.lastRunAt = new Date().toISOString();
+    this.saveQueue();
+    return entry.status === 'failed';
   }
 
   // Adds a single entry to the existing queue without rebuilding.

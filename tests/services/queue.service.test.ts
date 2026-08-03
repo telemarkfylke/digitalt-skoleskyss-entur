@@ -138,13 +138,35 @@ describe('QueueService.markSent', () => {
     service.buildQueue([makeStudent({ OrdersId: 1 })]);
     assert.doesNotThrow(() => service.markSent('999'));
   });
+
+  test('does not clobber an entry added concurrently by another QueueService instance', () => {
+    const p = queuePath();
+    const drain = new QueueService(p);
+    drain.buildQueue([makeStudent({ OrdersId: 1 })]);
+
+    // Simulate the monitor process adding a new entry to disk directly,
+    // bypassing the `drain` instance, while the drain run is in progress.
+    const monitor = new QueueService(p);
+    monitor.loadQueue();
+    monitor.addEntry({ ordersId: '999', studentId: '42', startDate: '2025-08-15' });
+
+    drain.markSent('1');
+
+    const reader = new QueueService(p);
+    reader.loadQueue();
+    const stats = reader.getStats();
+    assert.equal(stats.total, 2);
+    assert.equal(stats.sent, 1);
+    assert.equal(stats.pending, 1);
+  });
 });
 
 describe('QueueService.markFailed', () => {
-  test('keeps status as pending when below maxRetries', () => {
+  test('keeps status as pending when below maxRetries, and returns false', () => {
     const service = new QueueService(queuePath(), 3);
     service.buildQueue([makeStudent({ OrdersId: 1 })]);
-    service.markFailed('1', 'first error');
+    const becamePermanentlyFailed = service.markFailed('1', 'first error');
+    assert.equal(becamePermanentlyFailed, false);
     const batch = service.getNextBatch(0);
     assert.equal(batch.length, 1);
     assert.equal(batch[0].status, 'pending');
@@ -152,21 +174,41 @@ describe('QueueService.markFailed', () => {
     assert.equal(batch[0].errorMessage, 'first error');
   });
 
-  test('sets status to failed after reaching maxRetries', () => {
+  test('sets status to failed after reaching maxRetries, and returns true on the crossing call', () => {
     const service = new QueueService(queuePath(), 3);
     service.buildQueue([makeStudent({ OrdersId: 1 })]);
-    service.markFailed('1', 'err');
-    service.markFailed('1', 'err');
-    service.markFailed('1', 'err');
+    assert.equal(service.markFailed('1', 'err'), false);
+    assert.equal(service.markFailed('1', 'err'), false);
+    assert.equal(service.markFailed('1', 'err'), true);
     const stats = service.getStats();
     assert.equal(stats.failed, 1);
     assert.equal(stats.pending, 0);
   });
 
-  test('does not throw for unknown ordersId', () => {
+  test('does not throw for unknown ordersId, and returns false', () => {
     const service = new QueueService(queuePath());
     service.buildQueue([makeStudent({ OrdersId: 1 })]);
-    assert.doesNotThrow(() => service.markFailed('999', 'error'));
+    let result: boolean | undefined;
+    assert.doesNotThrow(() => { result = service.markFailed('999', 'error'); });
+    assert.equal(result, false);
+  });
+
+  test('does not clobber an entry added concurrently by another QueueService instance', () => {
+    const p = queuePath();
+    const drain = new QueueService(p);
+    drain.buildQueue([makeStudent({ OrdersId: 1 })]);
+
+    const monitor = new QueueService(p);
+    monitor.loadQueue();
+    monitor.addEntry({ ordersId: '999', studentId: '42', startDate: '2025-08-15' });
+
+    drain.markFailed('1', 'err');
+
+    const reader = new QueueService(p);
+    reader.loadQueue();
+    const stats = reader.getStats();
+    assert.equal(stats.total, 2);
+    assert.equal(stats.pending, 2);
   });
 });
 

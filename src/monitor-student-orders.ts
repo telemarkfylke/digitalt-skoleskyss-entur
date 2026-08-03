@@ -7,6 +7,7 @@ import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, mapStude
 import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
+import { sendTeamsNotification } from './services/teams-notifier.service';
 
 dotenv.config();
 
@@ -41,7 +42,6 @@ const AUDIT_DIR = path.join(process.cwd(), 'logs');
 const AUDIT_LOG_FILE = path.join(AUDIT_DIR, 'student-order-monitor.audit.log');
 const ERROR_LOG_FILE = path.join(AUDIT_DIR, 'student-order-monitor.error.log');
 const CRITICAL_LOG_FILE = path.join(AUDIT_DIR, 'student-order-monitor.critical.log');
-const TEAMS_WEBHOOK_URL = process.env.TEAMS_WEBHOOK_URL || '';
 
 const summary: MonitorSummary = {
   newOrders: 0,
@@ -59,30 +59,6 @@ const ensureAuditDir = async (): Promise<void> => {
 const writeJsonLine = async (filePath: string, payload: unknown): Promise<void> => {
   await ensureAuditDir();
   await appendFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
-};
-
-const sendTeamsNotification = async (title: string, details: string): Promise<void> => {
-  if (!TEAMS_WEBHOOK_URL) {
-    appLogger.warn('TEAMS_WEBHOOK_URL not configured. Skipping Teams notification.');
-    return;
-  }
-
-  try {
-    const response = await fetch(TEAMS_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: `**${title}**\n\n${details}`
-      })
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Teams webhook failed (${response.status}): ${body}`);
-    }
-  } catch (error) {
-    appLogger.error('Failed sending Teams notification: {ErrorMessage}', error instanceof Error ? error.message : String(error));
-  }
 };
 
 const withRetry = async <T>(

@@ -3,6 +3,7 @@ import { SyncManager, SyncOptions } from './sync-manager';
 import { QueueService } from './services/queue.service';
 import { calculateSchoolYear, formatSchoolYear } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
+import { sendTeamsNotification } from './services/teams-notifier.service';
 
 // Load environment variables
 dotenv.config();
@@ -779,9 +780,13 @@ if (require.main === module) {
         appLogger.info('--  npm run sync-entur -- -- --method single --dry-run false --student-ids "12345,67890" # PowerShell-safe real sync');
         return exitWithCode(0);
       })
-      .catch((error) => {
+      .catch(async (error) => {
         const errorMessage = error instanceof Error ? error.message : String(error);
         appLogger.error('Unhandled error: {ErrorMessage}', errorMessage);
+
+        if (config.method === 'queue' && config.dryRun === false) {
+          await sendTeamsNotification('Queue drain sync failed', errorMessage);
+        }
 
         if (isSetupOrConfigError(errorMessage)) {
           appLogger.info('Setup/config issue detected. Showing troubleshooting guides...');

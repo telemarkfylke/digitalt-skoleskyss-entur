@@ -4,7 +4,7 @@ Node.js + TypeScript application for syncing student school transport data from 
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 24+
 - npm
 - Access to SQL Server
 - Entur API credentials
@@ -118,7 +118,7 @@ Three separate roles keep the queue in sync:
 
 2. **Ongoing — monitor adds new students**: the monitor process (`npm run monitor-orders`) reconciles the queue against the database on every startup (catching any students added while the monitor was down), then appends new students to the queue in real time as they appear. Updates and removals still go directly to Entur.
 
-3. **Scheduled drain — Task Scheduler sends batches**: each scheduled run picks the next N pending students from the queue (`SYNC_QUEUE_LIMIT`, default 10) and sends them to Entur. Each student is marked `sent` on success, or kept `pending` for retry. After 3 failures the entry is marked `failed` and skipped permanently. The queue file persists between runs — progress is never lost even if the task is interrupted.
+3. **Scheduled drain — Task Scheduler sends batches**: each scheduled run picks the next N pending students from the queue (`SYNC_QUEUE_LIMIT`, default 10) and sends them to Entur. Each student is marked `sent` on success, or kept `pending` for retry. After 3 failures the entry is marked `failed`, skipped permanently, and a Teams alert ("Queue entry permanently failed") is sent. If a whole drain run fails outright (e.g. Entur/DB unreachable), a separate "Queue drain sync failed" Teams alert is sent as well. The queue file persists between runs — progress is never lost even if the task is interrupted, and reads/writes are safe to run concurrently from the monitor and the scheduled drain job (each write reloads the file first, so the two processes never clobber each other's changes).
 
 ### Queue commands
 
@@ -132,8 +132,8 @@ npm run sync-entur-queue-live
 # Rebuild queue from DB (use at start of new school year)
 npm run sync-entur-queue-rebuild
 
-# Send all pending students in one run
-SYNC_QUEUE_LIMIT=0 npm run sync-entur-queue-live
+# Send all pending students in one run (PowerShell)
+$env:SYNC_QUEUE_LIMIT=0; npm run sync-entur-queue-live
 
 # Override limit for one run
 npm run sync-entur -- -- --method queue --queue-limit 50 --dry-run false
@@ -143,19 +143,19 @@ npm run sync-entur -- -- --method queue --queue-limit 50 --dry-run false
 
 Point the task at `npm run sync-entur-queue-live` (or the equivalent `node dist/sync-students-to-entur.js --method queue --dry-run false`). Run between 09:00–15:00 as required. The queue file at `queue/sync-queue.json` tracks all state across runs.
 
-Recommended first-run sequence:
+Recommended first-run sequence — build and verify the queue *before* turning on the always-on monitor and the recurring drain task, so nothing gets live-sent before it's been checked:
 
 ```bash
 # 1. Build the initial queue from the database (dry run — inspect the file)
 npm run sync-entur-queue-rebuild
 
-# 2. Start the monitor so new students are added to the queue automatically
+# 2. Send a small batch to Entur and verify with them (PowerShell)
+$env:SYNC_QUEUE_LIMIT=5; npm run sync-entur-queue-live
+
+# 3. Once verified, start the monitor so new students are added to the queue automatically
 npm run monitor-orders
 
-# 3. Send a small batch to Entur and verify with them
-SYNC_QUEUE_LIMIT=5 npm run sync-entur-queue-live
-
-# 4. Once verified, increase the limit or set to 0 to drain the queue
+# 4. Schedule the recurring drain task, then increase SYNC_QUEUE_LIMIT (or set to 0) as Entur verifies each batch
 ```
 
 ### Fare contract config
@@ -206,7 +206,7 @@ npm run sync-entur -- -- --validate --method filtered --classes "1A,1B" --grade-
   - `logs/student-order-monitor.error.log`
   - `logs/student-order-monitor.critical.log`
 - Retries with exponential backoff are applied when Entur requests fail.
-- Daily summary and critical failure notifications are sent to Teams if `TEAMS_WEBHOOK_URL` is set.
+- Daily summary and critical failure notifications are sent to Teams if `TEAMS_WEBHOOK_URL` is set. The scheduled queue-drain job (`sync-entur-queue-live`) sends its own Teams alerts too — one per permanently-failed student, and one if an entire drain run fails outright.
 - Current monitor query/filtering is defined directly in `src/monitor-student-orders.ts`.
 
 ## Additional Notes

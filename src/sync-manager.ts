@@ -3,6 +3,7 @@ import { StudentService } from './services/student.service';
 import { EnturApiService, PostSkoleskyssRequest } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
 import { appLogger } from './services/logger.service';
+import { sendTeamsNotification } from './services/teams-notifier.service';
 import { StudentWithDetails } from './types/user.types';
 import { calculateSchoolYear, mapStudentRecordToEnturRequest } from './utils';
 
@@ -346,6 +347,14 @@ export class SyncManager {
     const startYear = currentSchoolYear.graduationYear;
     const endYear = (currentSchoolYear.endYear + 1).toString();
 
+    const alertIfPermanentlyFailed = async (entryOrdersId: string, entryStudentId: string, becamePermanentlyFailed: boolean, error: string) => {
+      if (!becamePermanentlyFailed) return;
+      await sendTeamsNotification(
+        'Queue entry permanently failed',
+        `Student ID: ${entryStudentId}\nOrders ID: ${entryOrdersId}\nError: ${error}`
+      );
+    };
+
     try {
       await this.db.connect();
       const enturConnected = await this.enturService.testConnection();
@@ -357,8 +366,8 @@ export class SyncManager {
 
           if (students.length === 0) {
             const msg = `Student ${entry.studentId} not found in DB for current school year`;
-            queueService.markFailed(entry.ordersId, msg);
-            queueService.saveQueue();
+            const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, msg);
+            await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, msg);
             result.failedCount++;
             result.errors.push(`[${entry.ordersId}] ${msg}`);
             continue;
@@ -374,15 +383,15 @@ export class SyncManager {
             queueService.markSent(entry.ordersId);
           } else {
             const errMsg = batchResult.errors[0] ?? 'processSingleBatch reported failure';
-            queueService.markFailed(entry.ordersId, errMsg);
+            const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, errMsg);
+            await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, errMsg);
           }
         } catch (err: any) {
-          queueService.markFailed(entry.ordersId, err.message);
+          const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, err.message);
+          await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, err.message);
           result.failedCount++;
           result.errors.push(`[${entry.ordersId}] ${err.message}`);
         }
-
-        queueService.saveQueue();
       }
     } finally {
       await this.db.disconnect();

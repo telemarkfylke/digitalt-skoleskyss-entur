@@ -55,8 +55,20 @@ const buildDefaultConfig = (): OrganisationFareContractConfig => {
 //   config: { calendarId: 'TEL:FareDayType:SchoolDaySpecial20252026' }
 // }
 
-// TODO: Implement rules for specific schools and classes. For now, the array is empty, meaning all schools and classes will use the default config.
-export const fareContractRules: FareContractRule[] = [];
+// If not special rules are defined for a school or class, the default config is used. 
+// Remove all the rules and leave an empty array to use only the default config for all schools and classes.
+export const fareContractRules: FareContractRule[] = [
+  // Regel for Talenthuset: Alle dager mellom 5 og 23, uavhengig av skoleårskalender.
+  { schoolIds: ['7'], config: { calendarId: undefined, timeBands: { startTime: 5, endTime: 23 } } },
+
+  // Regel for Toppidrett: Alle dager mellom 5 og 23, Alle skoledager.
+  { schoolIds: ['9'], config: { timeBands: { startTime: 5, endTime: 23 } } },
+
+  // Regel for Skien VGS Musikk, Dans og Drama VG1 VG2 VG3: Alle dager mellom 5 og 23, Alle skoledager.
+  { classNamePatterns: ['MDMDD1--1-', 'MDMDD1--4-', 'MDMDD1--6-', 
+                        'MDDAN2----','MDDRA2----' ,'MDMUS2----', 
+                        'MDDAN3----', 'MDDRA3----', 'MDMUS3----' ], config: { timeBands: { startTime: 5, endTime: 23 } } }
+];
 
 export const getFareContractConfig = (
   schoolId: string | number | undefined,

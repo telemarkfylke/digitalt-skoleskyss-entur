@@ -357,7 +357,7 @@ async function monitorActiveStudentOrders() {
     queryMonitor.on('error', (error) => {
       appLogger.error('Query monitoring error: {ErrorMessage}', error instanceof Error ? error.message : String(error));
     });
-
+    // TODO: Implement correct school year filtering (See other SQL requests.)
     const studentOrdersConfig = {
       name: `ActiveStudentOrders${currentSchoolYear.graduationYear}`,
       query: `

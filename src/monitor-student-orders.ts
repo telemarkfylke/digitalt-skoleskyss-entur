@@ -357,7 +357,6 @@ async function monitorActiveStudentOrders() {
     queryMonitor.on('error', (error) => {
       appLogger.error('Query monitoring error: {ErrorMessage}', error instanceof Error ? error.message : String(error));
     });
-    // TODO: Implement correct school year filtering (See other SQL requests.)
     const studentOrdersConfig = {
       name: `ActiveStudentOrders${currentSchoolYear.graduationYear}`,
       query: `
@@ -387,17 +386,22 @@ async function monitorActiveStudentOrders() {
         INNER JOIN dbo.Schools s ON s.Id = o.SchoolId
         INNER JOIN dbo.SchoolClasses sc ON sc.Id = o.SchoolClassId
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
-        WHERE o.ToDate >= '2026-01-01'
-          AND o.ToDate < '2027-01-01'
+        WHERE o.ToDate >= @param0
+          AND o.ToDate < @param1
           AND s.Type = 1
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
           AND UsesMassTransit = 1
         ORDER BY o.ToDate DESC
       `,
+      
+      params: [
+        new Date(`${currentSchoolYear.graduationYear}-01-01`), // Start of the year
+        new Date(`${currentSchoolYear.endYear + 1}-01-01`), // Start of the next year (exclusive)
+      ],
       interval: 5000, // Check every 5 seconds
       keyColumns: ['OrdersId'], // Use Order ID as unique identifier
-      // Use updatedTime and studentUpdatedTime to detect all changes, BUT! EnTur dont need to know if a field they dont use is updated. 
+      // Use updatedTime and studentUpdatedTime to detect all changes, BUT! EnTur dont need to know if a field they dont use is updated.
       // In the future if we start to use zones, we need to monitor changes in the zones fiels (currently not needed)
       compareColumns: ['OverridesOrderId', 'StartDate', 'EndDate', 'StudentName', 'StudentMiddleName', 'StudentLastName', 'PhoneNumber', 'EmailAddress', 'SchoolId', 'SchoolName', 'SchoolClassId', 'SchoolClassName', 'SchoolGradeId', 'PrimaryStatus'] // Monitor these columns for changes
     };

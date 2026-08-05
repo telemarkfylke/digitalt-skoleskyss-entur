@@ -14,6 +14,7 @@ export interface CustomQueryChange {
 export interface CustomQueryConfig {
   name: string;
   query: string;
+  params?: any[]; // parameters bound to @param0, @param1, ... placeholders in the query
   interval: number; // milliseconds
   keyColumns: string[]; // columns to use for identifying unique records
   compareColumns?: string[]; // columns to compare for changes (if not provided, compares all)
@@ -95,7 +96,7 @@ export class CustomQueryMonitor extends EventEmitter {
    */
   async getCurrentResults(config: CustomQueryConfig): Promise<any[]> {
     const timeout = config.timeoutMs || 30000; // Default 30 second timeout
-    const result = await this.db.query(config.query, [], timeout);
+    const result = await this.db.query(config.query, config.params || [], timeout);
     return result.recordset;
   }
 

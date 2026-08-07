@@ -95,23 +95,23 @@ describe('validateSkoleskyssRequest', () => {
     assert.ok(result.errors.some((e) => e.includes('phone')));
   });
 
-  test('validity.calendar and timeBands are optional — valid request without them', () => {
+  test('validity.calendar and validity.travelWindow are optional — valid request without them', () => {
     const req = validRequest();
     // Ensure neither field is present
     assert.equal(req.validity.calendar, undefined);
-    assert.equal(req.timeBands, undefined);
+    assert.equal(req.validity.travelWindow, undefined);
     const result = service.validateSkoleskyssRequest(req);
     assert.equal(result.isValid, true);
   });
 
-  test('valid request with validity.calendar.id and timeBands passes', () => {
+  test('valid request with validity.calendar.id and validity.travelWindow passes', () => {
     const req: PostSkoleskyssRequest = {
       ...validRequest(),
       validity: {
         ...validRequest().validity,
         calendar: { id: 'TEL:FareDayType:SchoolDayDefaultSchool20252026' },
+        travelWindow: { fromHour: 5, toHour: 18 },
       },
-      timeBands: { startTime: 5, endTime: 18 },
     };
     const result = service.validateSkoleskyssRequest(req);
     assert.equal(result.isValid, true);

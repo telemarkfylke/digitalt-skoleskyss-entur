@@ -58,10 +58,10 @@ interface PostSkoleskyssRequest {
       | { groupOfTariffZoneId: string }
     >;
     calendar?: { id: string };   // from OrganisationFareContractConfig
-  };
-  timeBands?: {                 // from OrganisationFareContractConfig
-    startTime: number;
-    endTime: number;
+    travelWindow?: {             // from OrganisationFareContractConfig.timeBands
+      fromHour: number;
+      toHour: number;
+    };
   };
   studentDetails?: {
     firstName?: string;
@@ -83,7 +83,7 @@ interface PostSkoleskyssRequest {
 }
 ```
 
-`validity.calendar.id` and `timeBands` are populated automatically from [fare contract config](#fare-contract-config) and omitted from the payload when not set.
+`validity.calendar.id` and `validity.travelWindow` are populated automatically from [fare contract config](#fare-contract-config) and omitted from the payload when not set.
 
 ## Fare Contract Config
 
@@ -229,7 +229,7 @@ The monitor handles this with a **startup reconciliation**: before `startMonitor
 - Basic email format (if set)
 - Phone number format (if set)
 
-`validity.calendar` and `timeBands` are not validated — they are optional and Entur handles absent values gracefully.
+`validity.calendar` and `validity.travelWindow` are not validated — they are optional and Entur handles absent values gracefully.
 
 ## Useful Commands
 

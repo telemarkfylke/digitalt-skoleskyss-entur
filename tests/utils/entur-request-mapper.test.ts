@@ -69,9 +69,9 @@ describe('mapStudentRecordToEnturRequest', () => {
     assert.equal(req.validity.calendar?.id, 'TEL:FareDayType:SchoolDayDefaultSchool20252026');
   });
 
-  test('includes timeBands from default fare config', () => {
+  test('includes validity.travelWindow from default fare config', () => {
     const req = mapStudentRecordToEnturRequest(service, baseRecord());
-    assert.deepEqual(req.timeBands, { startTime: 5, endTime: 18 });
+    assert.deepEqual(req.validity.travelWindow, { fromHour: 5, toHour: 18 });
   });
 
   test('uses overridden calendarId when a fare rule matches', () => {

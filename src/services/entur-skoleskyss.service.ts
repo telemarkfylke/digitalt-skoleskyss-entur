@@ -14,10 +14,7 @@ export interface PostSkoleskyssRequest {
       | { groupOfTariffZoneId: string; }
     >;
     calendar?: { id: string; };
-  };
-  timeBands?: {
-    startTime: number;
-    endTime: number;
+    travelWindow?: { fromHour: number; toHour: number; };
   };
   studentDetails?: {
     firstName?: string;
@@ -258,9 +255,11 @@ export class EnturApiService {
         startDate: studentData.startDate, // yyyy-mm-dd
         endDate: studentData.endDate, // yyyy-mm-dd
         zones: studentData.zones,
-        calendar: studentData.calendarId ? { id: studentData.calendarId } : undefined
+        calendar: studentData.calendarId ? { id: studentData.calendarId } : undefined,
+        travelWindow: studentData.timeBands
+          ? { fromHour: studentData.timeBands.startTime, toHour: studentData.timeBands.endTime }
+          : undefined
       },
-      timeBands: studentData.timeBands,
       studentDetails: sanitizedStudentDetails
     };
   }

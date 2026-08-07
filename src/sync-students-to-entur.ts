@@ -1,12 +1,9 @@
-import dotenv from 'dotenv';
+import './env';
 import { SyncManager, SyncOptions } from './sync-manager';
 import { QueueService } from './services/queue.service';
 import { calculateSchoolYear, formatSchoolYear } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { sendTeamsNotification } from './services/teams-notifier.service';
-
-// Load environment variables
-dotenv.config();
 
 interface SyncConfig {
   method: 'all' | 'filtered' | 'single' | 'queue';

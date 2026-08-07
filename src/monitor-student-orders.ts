@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import './env';
 import path from 'path';
 import { appendFile, mkdir } from 'fs/promises';
 import { DatabaseService } from './services/database.service';
@@ -8,8 +8,6 @@ import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
 import { sendTeamsNotification } from './services/teams-notifier.service';
-
-dotenv.config();
 
 type ChangeType = 'new' | 'updated' | 'removed';
 

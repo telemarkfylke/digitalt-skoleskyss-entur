@@ -1,10 +1,7 @@
-import dotenv from 'dotenv';
+import './env';
 import { DatabaseService } from './services/database.service';
 import { appLogger, flushLogs } from './services/logger.service';
 import { StudentService } from './services/student.service';
-
-// Load environment variables
-dotenv.config();
 
 class Application {
   private databaseService: DatabaseService;

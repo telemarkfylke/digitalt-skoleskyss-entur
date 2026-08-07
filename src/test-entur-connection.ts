@@ -1,10 +1,7 @@
-import dotenv from 'dotenv';
+import './env';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { appLogger, flushLogs } from './services/logger.service';
 import { calculateSchoolYear } from './utils';
-
-// Load environment variables
-dotenv.config();
 
 async function testEnturConnection() {
   appLogger.debug('Starting Entur Skoleskyss API connection test');

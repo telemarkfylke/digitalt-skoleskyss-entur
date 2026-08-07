@@ -1,9 +1,6 @@
-import dotenv from 'dotenv';
+import './env';
 import { DatabaseService } from './services/database.service';
 import { appLogger, flushLogs } from './services/logger.service';
-
-// Load environment variables
-dotenv.config();
 
 async function testDatabaseConnection() {
   appLogger.debug('Database Connection Test Tool');

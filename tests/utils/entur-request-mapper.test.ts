@@ -64,9 +64,9 @@ describe('mapStudentRecordToEnturRequest', () => {
     assert.equal(req.validity.endDate, '2026-06-15');
   });
 
-  test('includes calendarId from default fare config', () => {
+  test('includes validity.calendar.id from default fare config', () => {
     const req = mapStudentRecordToEnturRequest(service, baseRecord());
-    assert.equal(req.calendarId, 'TEL:FareDayType:SchoolDayDefaultSchool20252026');
+    assert.equal(req.validity.calendar?.id, 'TEL:FareDayType:SchoolDayDefaultSchool20252026');
   });
 
   test('includes timeBands from default fare config', () => {
@@ -80,13 +80,13 @@ describe('mapStudentRecordToEnturRequest', () => {
       config: { calendarId: 'OVERRIDE_CALENDAR' },
     });
     const req = mapStudentRecordToEnturRequest(service, baseRecord());
-    assert.equal(req.calendarId, 'OVERRIDE_CALENDAR');
+    assert.equal(req.validity.calendar?.id, 'OVERRIDE_CALENDAR');
   });
 
-  test('calendarId is undefined when env var is not set', () => {
+  test('validity.calendar is undefined when env var is not set', () => {
     delete process.env.ENTUR_DEFAULT_CALENDAR_ID;
     const req = mapStudentRecordToEnturRequest(service, baseRecord());
-    assert.equal(req.calendarId, undefined);
+    assert.equal(req.validity.calendar, undefined);
     process.env.ENTUR_DEFAULT_CALENDAR_ID = 'TEL:FareDayType:SchoolDayDefaultSchool20252026';
   });
 

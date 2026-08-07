@@ -13,8 +13,8 @@ export interface PostSkoleskyssRequest {
       | { fromZoneId: string; toZoneId: string; }
       | { groupOfTariffZoneId: string; }
     >;
+    calendar?: { id: string; };
   };
-  calendarId?: string;
   timeBands?: {
     startTime: number;
     endTime: number;
@@ -257,9 +257,9 @@ export class EnturApiService {
       validity: {
         startDate: studentData.startDate, // yyyy-mm-dd
         endDate: studentData.endDate, // yyyy-mm-dd
-        zones: studentData.zones
+        zones: studentData.zones,
+        calendar: studentData.calendarId ? { id: studentData.calendarId } : undefined
       },
-      calendarId: studentData.calendarId,
       timeBands: studentData.timeBands,
       studentDetails: sanitizedStudentDetails
     };

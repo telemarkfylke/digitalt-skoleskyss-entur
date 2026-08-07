@@ -321,8 +321,18 @@ export class EnturApiService {
     // Validate optional phone number format if provided
     if (request.studentDetails?.phone?.number) {
       const phoneNumber = request.studentDetails.phone.number;
-      if (!/^\+?\d+$/.test(phoneNumber.replace(/\s|-/g, ''))) {
-        errors.push('studentDetails.phone.number must contain only digits, spaces, hyphens, and optional + prefix');
+      const countryCode = request.studentDetails.phone.countryCode;
+
+      if (!/^\d+$/.test(phoneNumber)) {
+        errors.push('studentDetails.phone.number must contain only digits (no spaces, hyphens, or country code)');
+      } else if (!countryCode || countryCode === '+47') {
+        if (!/^[49]\d{7}$/.test(phoneNumber)) {
+          errors.push('studentDetails.phone.number must be exactly 8 digits starting with 4 or 9 when countryCode is +47 or omitted');
+        }
+      }
+
+      if (countryCode && !/^\+?\d{1,3}$/.test(countryCode)) {
+        errors.push('studentDetails.phone.countryCode must be an optional "+" followed by 1-3 digits');
       }
     }
 

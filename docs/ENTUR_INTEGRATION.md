@@ -227,7 +227,7 @@ The monitor handles this with a **startup reconciliation**: before `startMonitor
 - At least one `zones` entry
 - Zone format correctness
 - Basic email format (if set)
-- Phone number format (if set)
+- Phone number format (if set): digits only, no spaces/hyphens/country code embedded in `number`; when `countryCode` is `+47` or omitted, `number` must be exactly 8 digits starting with `4` or `9`; `countryCode` itself must be an optional `+` followed by 1-3 digits
 
 `validity.calendar` and `validity.travelWindow` are not validated — they are optional and Entur handles absent values gracefully.
 

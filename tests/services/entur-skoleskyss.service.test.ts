@@ -85,7 +85,7 @@ describe('validateSkoleskyssRequest', () => {
     assert.ok(result.errors.some((e) => e.includes('email')));
   });
 
-  test('invalid phone number format fails', () => {
+  test('non-digit phone number fails', () => {
     const req: PostSkoleskyssRequest = {
       ...validRequest(),
       studentDetails: { phone: { number: 'abc-not-a-number' } },
@@ -93,6 +93,92 @@ describe('validateSkoleskyssRequest', () => {
     const result = service.validateSkoleskyssRequest(req);
     assert.equal(result.isValid, false);
     assert.ok(result.errors.some((e) => e.includes('phone')));
+  });
+
+  test('phone number with spaces or a + prefix fails (must be digits only)', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '+47 90000000' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('phone.number')));
+  });
+
+  test('phone number not starting with 4 or 9 fails when countryCode is +47', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '12345678', countryCode: '+47' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('phone.number')));
+  });
+
+  test('phone number not starting with 4 or 9 fails when countryCode is omitted', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '12345678' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('phone.number')));
+  });
+
+  test('phone number with wrong length fails when countryCode is +47', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '900000000', countryCode: '+47' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('phone.number')));
+  });
+
+  test('8-digit phone number starting with 4 or 9 passes with +47 countryCode', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '90000000', countryCode: '+47' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, true);
+  });
+
+  test('8-digit phone number starting with 4 or 9 passes when countryCode is omitted', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '40000000' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, true);
+  });
+
+  test('non-Norwegian countryCode skips the 8-digit/4-or-9 rule', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '1234567', countryCode: '+46' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, true);
+  });
+
+  test('countryCode without + prefix passes (+ is optional)', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '90000000', countryCode: '47' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, true);
+  });
+
+  test('countryCode with more than 3 digits fails', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '900000', countryCode: '4777' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('countryCode')));
   });
 
   test('validity.calendar and validity.travelWindow are optional — valid request without them', () => {

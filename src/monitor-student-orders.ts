@@ -3,7 +3,7 @@ import path from 'path';
 import { appendFile, mkdir } from 'fs/promises';
 import { DatabaseService } from './services/database.service';
 import { CustomQueryMonitor } from './services/custom-query-monitor.service';
-import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, mapStudentRecordToEnturRequest } from './utils';
+import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, mapStudentRecordToEnturRequest, dedupeByOrderId } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
@@ -314,7 +314,11 @@ async function monitorActiveStudentOrders() {
       };
 
       // New records are added to the queue for rate-limited batch processing by the scheduler.
-      for (const record of newFilter.filtered) {
+      const { deduped: newRecordsDeduped, duplicates: newRecordsDuplicates } = dedupeByOrderId(newFilter.filtered);
+      if (newRecordsDuplicates > 0) {
+        appLogger.warn('Removed {DuplicateCount} duplicate OrdersId record(s) from new-records batch before queueing', newRecordsDuplicates);
+      }
+      for (const record of newRecordsDeduped) {
         await writeJsonLine(AUDIT_LOG_FILE, {
           timestamp: new Date().toISOString(),
           level: 'info',
@@ -338,8 +342,8 @@ async function monitorActiveStudentOrders() {
         });
         if (wasAdded) summary.newOrders++;
       }
-      if (newFilter.filtered.length > 0) {
-        appLogger.info('{Count} new student(s) added to queue for scheduled processing', newFilter.filtered.length);
+      if (newRecordsDeduped.length > 0) {
+        appLogger.info('{Count} new student(s) added to queue for scheduled processing', newRecordsDeduped.length);
       }
 
       // Updates and removals go directly to Entur (immediate, not rate-limited).
@@ -411,8 +415,12 @@ async function monitorActiveStudentOrders() {
     // during downtime would otherwise never emit a NEW_RECORDS event.
     try {
       const currentRecords = await queryMonitor.getCurrentResults(studentOrdersConfig);
+      const { deduped: currentRecordsDeduped, duplicates: currentRecordsDuplicates } = dedupeByOrderId(currentRecords);
+      if (currentRecordsDuplicates > 0) {
+        appLogger.warn('Removed {DuplicateCount} duplicate OrdersId record(s) from startup reconciliation batch', currentRecordsDuplicates);
+      }
       let reconciled = 0;
-      for (const record of currentRecords) {
+      for (const record of currentRecordsDeduped) {
         const wasAdded = queueService.addEntry({
           ordersId: String(record.OrdersId),
           studentId: String(record.StudentId),
@@ -423,7 +431,7 @@ async function monitorActiveStudentOrders() {
       appLogger.info(
         'Queue reconciliation on startup: {Reconciled} new entries added ({Total} DB records checked)',
         reconciled,
-        currentRecords.length
+        currentRecordsDeduped.length
       );
     } catch (error) {
       appLogger.warn(

@@ -80,6 +80,57 @@ describe('QueueService.buildQueue', () => {
     assert.equal(stats.total, 1);
     assert.equal(service.getNextBatch(0)[0].ordersId, '99');
   });
+
+  test('collapses duplicate OrdersId records (e.g. from a 3rd-party data issue) into a single entry', () => {
+    const service = new QueueService(queuePath());
+    service.buildQueue([
+      makeStudent({ OrdersId: 1, StudentId: 10 }),
+      makeStudent({ OrdersId: 1, StudentId: 10 }),
+      makeStudent({ OrdersId: 2, StudentId: 20 }),
+    ]);
+    const stats = service.getStats();
+    assert.equal(stats.total, 2);
+    const batch = service.getNextBatch(0);
+    assert.equal(batch.filter((e) => e.ordersId === '1').length, 1);
+  });
+});
+
+describe('QueueService.loadQueue', () => {
+  test('collapses duplicate ordersId entries already on disk, keeping sent over pending', () => {
+    const p = queuePath();
+    const now = new Date().toISOString();
+    const rawQueue = {
+      version: 1,
+      generatedAt: now,
+      lastRunAt: null,
+      entries: [
+        { studentId: '1', ordersId: '5', startDate: '2025-08-15', addedAt: now, processedAt: now, status: 'sent', retryCount: 0 },
+        { studentId: '1', ordersId: '5', startDate: '2025-08-15', addedAt: now, processedAt: null, status: 'pending', retryCount: 0 },
+        { studentId: '2', ordersId: '6', startDate: '2025-08-15', addedAt: now, processedAt: null, status: 'pending', retryCount: 0 },
+      ],
+    };
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(rawQueue, null, 2), 'utf-8');
+
+    const service = new QueueService(p);
+    service.loadQueue();
+
+    const stats = service.getStats();
+    assert.equal(stats.total, 2);
+    assert.equal(stats.sent, 1);
+    assert.equal(stats.pending, 1);
+
+    // The cleanup should also be persisted to disk, not just in memory.
+    const onDisk = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    assert.equal(onDisk.entries.length, 2);
+  });
+
+  test('leaves a queue with no duplicates untouched', () => {
+    const service = new QueueService(queuePath());
+    service.buildQueue([makeStudent({ OrdersId: 1 }), makeStudent({ OrdersId: 2 })]);
+    service.loadQueue();
+    assert.equal(service.getStats().total, 2);
+  });
 });
 
 describe('QueueService.getNextBatch', () => {

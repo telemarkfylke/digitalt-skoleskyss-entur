@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { StudentWithDetails } from '../types/user.types';
 import { appLogger } from './logger.service';
+import { dedupeByOrderId } from '../utils';
 
 export type QueueEntryStatus = 'pending' | 'sent' | 'failed';
 
@@ -56,7 +57,12 @@ export class QueueService {
   }
 
   buildQueue(students: StudentWithDetails[]): void {
-    const sorted = [...students].sort((a, b) => {
+    const { deduped, duplicates } = dedupeByOrderId(students);
+    if (duplicates > 0) {
+      appLogger.warn('buildQueue: removed {DuplicateCount} duplicate OrdersId record(s) before building queue', duplicates);
+    }
+
+    const sorted = [...deduped].sort((a, b) => {
       const dateA = new Date(a.StartDate).getTime();
       const dateB = new Date(b.StartDate).getTime();
       if (dateA !== dateB) return dateA - dateB;
@@ -95,7 +101,33 @@ export class QueueService {
     } catch {
       appLogger.warn('Queue file at {FilePath} is missing or corrupt — starting with empty queue', this.filePath);
       this.queue = this.emptyQueue();
+      return;
     }
+
+    const removed = this.dedupeEntries();
+    if (removed > 0) {
+      appLogger.warn('loadQueue: removed {DuplicateCount} duplicate ordersId entries from queue (kept most-advanced status per order)', removed);
+      this.saveQueue();
+    }
+  }
+
+  // Collapses entries that share an ordersId, keeping the most-advanced status
+  // (sent > pending > failed) so an already-sent order is never re-queued as pending.
+  private dedupeEntries(): number {
+    const statusPriority: Record<QueueEntryStatus, number> = { sent: 0, pending: 1, failed: 2 };
+    const byOrderId = new Map<string, QueueEntry>();
+    for (const entry of this.queue.entries) {
+      const existing = byOrderId.get(entry.ordersId);
+      if (!existing || statusPriority[entry.status] < statusPriority[existing.status]) {
+        byOrderId.set(entry.ordersId, entry);
+      }
+    }
+
+    const removed = this.queue.entries.length - byOrderId.size;
+    if (removed > 0) {
+      this.queue.entries = Array.from(byOrderId.values());
+    }
+    return removed;
   }
 
   saveQueue(): void {

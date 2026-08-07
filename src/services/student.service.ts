@@ -1,7 +1,7 @@
 import { DatabaseService } from './database.service';
 import { StudentWithDetails } from '../types/user.types';
 import { appLogger } from './logger.service';
-import { filterOverriddenOrders } from '../utils';
+import { filterOverriddenOrders, dedupeByOrderId } from '../utils';
 
 
 export class StudentService {
@@ -29,6 +29,7 @@ export class StudentService {
   private filterStudentData(students: any[], methodName: string): StudentWithDetails[] {
     const activeStudents = students.filter((student: any) => Number(student.PrimaryStatus) === 2);
     const studentsWithoutOverriddenOrders = filterOverriddenOrders(activeStudents).filtered;
+    const { deduped: dedupedStudents, duplicates } = dedupeByOrderId(studentsWithoutOverriddenOrders);
 
     appLogger.info(
       '{MethodName}: Found {TotalCount} students, {ActiveCount} are active (PrimaryStatus = 2), removed {RemovedCount} overridden orders',
@@ -38,7 +39,15 @@ export class StudentService {
       activeStudents.length - studentsWithoutOverriddenOrders.length
     );
 
-    return studentsWithoutOverriddenOrders as StudentWithDetails[];
+    if (duplicates > 0) {
+      appLogger.warn(
+        '{MethodName}: removed {DuplicateCount} duplicate OrdersId record(s) (likely a 3rd-party data issue)',
+        methodName,
+        duplicates
+      );
+    }
+
+    return dedupedStudents as StudentWithDetails[];
   }
 
   async testDatabaseAccess(): Promise<boolean> {

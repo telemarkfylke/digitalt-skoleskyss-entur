@@ -181,6 +181,42 @@ The sync queue decouples student detection from Entur API calls, allowing contro
 | **Append** | `npm run monitor-orders` (long-running) | Continuous — new students detected in DB |
 | **Drain** | `npm run sync-entur-queue-live` | Windows Task Scheduler (e.g. 09:00–15:00) |
 
+### Dispatch decision (new / updated / removed)
+
+```mermaid
+flowchart TD
+    A[Monitor detects a change] --> B{Change type}
+
+    B -->|new| N1["queueService.addEntry()<br/>queued as 'pending'"]
+    N1 --> N2[Scheduled drain: sync-entur-queue-live]
+    N2 --> N3{validateSkoleskyssRequest}
+    N3 -->|invalid| N4[Stays pending/failed<br/>retried next scheduled run]
+    N3 -->|valid| N5[createSkoleskyss]
+    N5 -->|success| N6[markSent]
+    N5 -->|failure| N7["markFailed — retry up to 3x,<br/>then permanently 'failed' + Teams alert"]
+
+    B -->|updated| U1["queueService.getEntry(ordersId)"]
+    U1 --> U2{Queue entry status?}
+    U2 -->|pending| U3[Skip direct send —<br/>drain will use fresh DB data]
+    U2 -->|failed| U4["Re-queue via addEntry()<br/>reset to pending, retryCount 0"]
+    U2 -->|sent or no entry| U5[processEnturChange:<br/>validate, then send directly]
+    U5 --> U6{validateSkoleskyssRequest}
+    U6 -->|invalid| U7["Throw EnturValidationError<br/>critical log + Teams: 'Entur Request<br/>Validation Failed (Not Sent)'"]
+    U6 -->|valid| U8["createSkoleskyss with retry —<br/>on exhaustion: critical log + Teams:<br/>'Critical Entur Sync Failure'"]
+
+    B -->|removed| R1[Audit log only —<br/>cancel endpoint not implemented]
+```
+
+An `updated` change only reaches Entur directly once the queue confirms it's safe to: if the
+order's queue entry (added when it was first seen as `new`) is still `pending`, it hasn't actually
+been created in Entur yet, so a direct send here would race — or duplicate — the scheduled drain's
+own send, and the update is skipped in favor of letting the drain pick up fresh DB data. If the
+entry is `failed`, it's re-queued instead of sent directly, so it gets a full retry cycle on the
+next drain. Only when the entry is `sent` (or, as an edge case, no entry exists at all — e.g. the
+queue file was reset independently of the monitor) does the direct send proceed. This logic lives
+in `QueueService.getEntry()` (`src/services/queue.service.ts`) and `decideUpdateDispatchAction`
+(`src/utils/queue-dispatch-decision.utils.ts`).
+
 ### Queue file
 
 Both the monitor and the scheduler share `queue/sync-queue.json` (path configurable via `SYNC_QUEUE_FILE`).
@@ -206,8 +242,8 @@ The monitor handles this with a **startup reconciliation**: before `startMonitor
 | Change type | Handling |
 |---|---|
 | New student order | Added to queue → sent by scheduler in next batch |
-| Updated student order | Direct Entur call (immediate) |
-| Removed student order | Audit log only (cancel endpoint not yet implemented) NOTE: A change will be triggered and a post to entur will happen with the changes |
+| Updated student order | Direct Entur call (immediate) — unless the order's queue entry is still `pending`/`failed` (see the dispatch decision diagram above) |
+| Removed student order | Audit log only — cancel endpoint not yet implemented, no Entur call is made |
 
 ### Entry dedup rules (`addEntry`)
 
@@ -230,6 +266,23 @@ The monitor handles this with a **startup reconciliation**: before `startMonitor
 - Phone number format (if set): digits only, no spaces/hyphens/country code embedded in `number`; when `countryCode` is `+47` or omitted, `number` must be exactly 8 digits starting with `4` or `9`; `countryCode` itself must be an optional `+` followed by 1-3 digits
 
 `validity.calendar` and `validity.travelWindow` are not validated — they are optional and Entur handles absent values gracefully.
+
+### Validation on the monitor's direct-send path
+
+`validateSkoleskyssRequest` isn't only used by `--validate`/`sync-manager.ts` — the monitor's
+direct-send path (`processEnturChange` in `src/monitor-student-orders.ts`) calls it too, right
+before `createSkoleskyss` and outside the retry loop (retrying a validation failure would just fail
+identically every time). If validation fails, the request is never sent — instead an
+`EnturValidationError` is thrown, logged as a critical-log event `entur_validation_failed_skipped`,
+and alerted to Teams under the title `"Entur Request Validation Failed (Not Sent)"`, distinct from
+the `entur_process_failed_after_retries` / `"Critical Entur Sync Failure"` alert used when
+`createSkoleskyss` itself fails after retries are exhausted.
+
+This exists because `mapStudentRecordToEnturRequest`'s `overrideEndDateWhenPrimaryStatusNot2`
+option (`src/utils/entur-request-mapper.utils.ts`, used by the monitor for every direct-send
+mapping) forces `endDate` to today's date whenever `PrimaryStatus != 2`. If the order's `StartDate`
+is still in the future, this produces `endDate < startDate` — an invalid request that would
+otherwise reach Entur's API directly and cause an internal server error there.
 
 ## Useful Commands
 

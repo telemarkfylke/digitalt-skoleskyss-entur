@@ -3,7 +3,7 @@ import path from 'path';
 import { appendFile, mkdir } from 'fs/promises';
 import { DatabaseService } from './services/database.service';
 import { CustomQueryMonitor } from './services/custom-query-monitor.service';
-import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, mapStudentRecordToEnturRequest, dedupeByOrderId } from './utils';
+import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
@@ -49,6 +49,13 @@ const summary: MonitorSummary = {
 };
 
 const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+class EnturValidationError extends Error {
+  constructor(public readonly validationErrors: string[]) {
+    super(`Entur request validation failed: ${validationErrors.join('; ')}`);
+    this.name = 'EnturValidationError';
+  }
+}
 
 const ensureAuditDir = async (): Promise<void> => {
   await mkdir(AUDIT_DIR, { recursive: true });
@@ -142,8 +149,13 @@ const processEnturChange = async (
     return;
   }
 
+  const request = mapRecordToEnturRequest(enturService, record);
+  const validation = enturService.validateSkoleskyssRequest(request);
+  if (!validation.isValid) {
+    throw new EnturValidationError(validation.errors);
+  }
+
   await withRetry(async () => {
-    const request = mapRecordToEnturRequest(enturService, record);
     await enturService.createSkoleskyss(request);
   }, context);
 };
@@ -277,15 +289,17 @@ async function monitorActiveStudentOrders() {
             } catch (error) {
               summary.errors++;
               const errorMessage = error instanceof Error ? error.message : String(error);
+              const isValidationError = error instanceof EnturValidationError;
 
               await writeJsonLine(CRITICAL_LOG_FILE, {
                 timestamp: new Date().toISOString(),
                 level: 'critical',
-                event: 'entur_process_failed_after_retries',
+                event: isValidationError ? 'entur_validation_failed_skipped' : 'entur_process_failed_after_retries',
                 changeType,
                 studentId: record.StudentId,
                 orderId: record.OrdersId,
                 error: errorMessage,
+                ...(isValidationError ? { validationErrors: (error as EnturValidationError).validationErrors } : {}),
                 student: {
                   firstName: record.StudentName,
                   middleName: record.StudentMiddleName,
@@ -297,13 +311,15 @@ async function monitorActiveStudentOrders() {
               });
 
               await sendTeamsNotification(
-                'Critical Entur Sync Failure',
+                isValidationError ? 'Entur Request Validation Failed (Not Sent)' : 'Critical Entur Sync Failure',
                 [
                   `Change type: ${changeType}`,
                   `Order ID: ${record.OrdersId}`,
                   `Student ID: ${record.StudentId}`,
                   `Student: ${record.StudentName || ''} ${record.StudentMiddleName || ''} ${record.StudentLastName || ''}`.trim(),
-                  `Error: ${errorMessage}`
+                  isValidationError
+                    ? `Validation errors: ${(error as EnturValidationError).validationErrors.join('; ')}`
+                    : `Error: ${errorMessage}`
                 ].join('\n')
               );
             }
@@ -344,8 +360,53 @@ async function monitorActiveStudentOrders() {
         appLogger.info('{Count} new student(s) added to queue for scheduled processing', newRecordsDeduped.length);
       }
 
-      // Updates and removals go directly to Entur (immediate, not rate-limited).
-      updatedFilter.filtered.forEach((record) => enqueue('updated', record));
+      // Updates go directly to Entur (immediate, not rate-limited), unless the order's
+      // queue entry shows it hasn't actually been sent yet — in that case the scheduled
+      // drain will pick up fresh DB data, so a direct send here would race/duplicate it.
+      for (const record of updatedFilter.filtered) {
+        const ordersId = String(record.OrdersId);
+        const decision = decideUpdateDispatchAction(queueService.getEntry(ordersId));
+
+        if (decision.action === 'skip') {
+          appLogger.info('Order {OrderId} update skipped: queue entry already pending; scheduled drain will use fresh DB data.', ordersId);
+          await writeJsonLine(AUDIT_LOG_FILE, {
+            timestamp: new Date().toISOString(),
+            level: 'info',
+            event: 'updated_skipped_queue_pending',
+            orderId: ordersId,
+            studentId: record.StudentId
+          });
+          continue;
+        }
+
+        if (decision.action === 'requeue') {
+          queueService.addEntry({ ordersId, studentId: String(record.StudentId), startDate: String(record.StartDate) });
+          appLogger.warn('Order {OrderId} update re-queued after prior failed send; will retry on next scheduled drain.', ordersId);
+          await writeJsonLine(AUDIT_LOG_FILE, {
+            timestamp: new Date().toISOString(),
+            level: 'info',
+            event: 'updated_requeued_after_failed',
+            orderId: ordersId,
+            studentId: record.StudentId
+          });
+          continue;
+        }
+
+        if (decision.reason === 'no_queue_entry') {
+          appLogger.warn('Order {OrderId} update has no queue entry (unusual state) — sending directly to Entur.', ordersId);
+          await writeJsonLine(AUDIT_LOG_FILE, {
+            timestamp: new Date().toISOString(),
+            level: 'warn',
+            event: 'updated_sent_no_queue_entry',
+            orderId: ordersId,
+            studentId: record.StudentId
+          });
+        }
+
+        enqueue('updated', record);
+      }
+
+      // Removals go directly to Entur (immediate, not rate-limited).
       removedFilter.filtered.forEach((record) => enqueue('removed', record));
 
       await Promise.all(tasks);

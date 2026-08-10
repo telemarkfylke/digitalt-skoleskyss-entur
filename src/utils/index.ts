@@ -5,3 +5,4 @@ export * from './entur-mock-student-details.utils';
 export * from './overridden-orders.utils';
 export * from './entur-request-mapper.utils';
 export * from './dedupe-orders.utils';
+export * from './queue-dispatch-decision.utils';

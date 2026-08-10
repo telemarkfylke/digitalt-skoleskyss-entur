@@ -217,6 +217,12 @@ export class QueueService {
     return true;
   }
 
+  // Reloads from disk first so concurrent writes (monitor + scheduler) don't overwrite each other.
+  getEntry(ordersId: string): QueueEntry | undefined {
+    this.loadQueue();
+    return this.queue.entries.find((e) => e.ordersId === ordersId);
+  }
+
   hasQueueFile(): boolean {
     return fs.existsSync(this.filePath);
   }

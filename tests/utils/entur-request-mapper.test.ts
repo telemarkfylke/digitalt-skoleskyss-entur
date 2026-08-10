@@ -116,4 +116,20 @@ describe('mapStudentRecordToEnturRequest', () => {
     });
     assert.equal(req.validity.endDate, '2026-06-15');
   });
+
+  // Documents why the caller must validate the mapped request before sending it to
+  // Entur (see EnturApiService.validateSkoleskyssRequest): overriding endDate to
+  // today does not account for a StartDate that hasn't happened yet, so it can
+  // produce an invalid endDate < startDate pair. This is intentionally not fixed
+  // here — the mapper's job is just to apply the override; validation catches it.
+  test('overriding endDate to today can produce endDate before startDate when StartDate is in the future', () => {
+    const today = new Date().toISOString().split('T')[0];
+    const record = { ...baseRecord(), StartDate: '2999-01-01', PrimaryStatus: 1 };
+    const req = mapStudentRecordToEnturRequest(service, record, {
+      overrideEndDateWhenPrimaryStatusNot2: true,
+    });
+    assert.equal(req.validity.startDate, '2999-01-01');
+    assert.equal(req.validity.endDate, today);
+    assert.ok(new Date(req.validity.endDate) < new Date(req.validity.startDate));
+  });
 });

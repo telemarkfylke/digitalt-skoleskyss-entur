@@ -403,6 +403,55 @@ describe('QueueService.addEntry', () => {
   });
 });
 
+describe('QueueService.getEntry', () => {
+  test('returns undefined when ordersId is not in queue', () => {
+    const service = new QueueService(queuePath());
+    service.buildQueue([makeStudent({ OrdersId: 1 })]);
+    assert.equal(service.getEntry('999'), undefined);
+  });
+
+  test('returns undefined when queue file does not exist yet', () => {
+    const service = new QueueService(queuePath());
+    assert.doesNotThrow(() => service.getEntry('1'));
+    assert.equal(service.getEntry('1'), undefined);
+  });
+
+  test('returns the matching entry for a pending order', () => {
+    const service = new QueueService(queuePath());
+    service.buildQueue([makeStudent({ OrdersId: 1 })]);
+    const entry = service.getEntry('1');
+    assert.equal(entry?.ordersId, '1');
+    assert.equal(entry?.status, 'pending');
+  });
+
+  test('returns the matching entry for a sent order', () => {
+    const service = new QueueService(queuePath());
+    service.buildQueue([makeStudent({ OrdersId: 1 })]);
+    service.markSent('1');
+    assert.equal(service.getEntry('1')?.status, 'sent');
+  });
+
+  test('returns the matching entry for a permanently failed order', () => {
+    const service = new QueueService(queuePath(), 1);
+    service.buildQueue([makeStudent({ OrdersId: 1 })]);
+    service.markFailed('1', 'permanent error');
+    assert.equal(service.getEntry('1')?.status, 'failed');
+  });
+
+  test('reloads from disk first, seeing entries added concurrently by another instance', () => {
+    const p = queuePath();
+    const writer = new QueueService(p);
+    writer.buildQueue([makeStudent({ OrdersId: 1 })]);
+
+    const other = new QueueService(p);
+    other.loadQueue();
+    other.addEntry({ ordersId: '999', studentId: '42', startDate: '2025-08-15' });
+
+    const reader = new QueueService(p);
+    assert.equal(reader.getEntry('999')?.ordersId, '999');
+  });
+});
+
 describe('QueueService.hasQueueFile', () => {
   test('returns false when file does not exist', () => {
     const service = new QueueService(queuePath());

@@ -279,8 +279,15 @@ export class SyncManager {
     const validRequests = requests.filter(request => {
       const validation = this.enturService.validateSkoleskyssRequest(request);
       if (!validation.isValid) {
-        result.errors.push(`Validation failed for student ${request.studentId}: ${validation.errors.join(', ')}`);
+        const errorSummary = validation.errors.join(', ');
+        result.errors.push(`Validation failed for student ${request.studentId}: ${errorSummary}`);
         result.failedCount++;
+        appLogger.error(
+          'Skipping Entur send: request validation failed for student {StudentId} application {ApplicationId}: {ValidationErrors}',
+          request.studentId,
+          request.applicationId,
+          errorSummary
+        );
         return false;
       }
       return true;

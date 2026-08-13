@@ -116,7 +116,7 @@ Three separate roles keep the queue in sync:
 
 1. **School year start — build the queue once**: run `npm run sync-entur-queue-rebuild` to fetch all current students from the database and write them to `queue/sync-queue.json`, sorted chronologically. Repeat at the start of each new school year.
 
-2. **Ongoing — monitor adds new students**: the monitor process (`npm run monitor-orders`) reconciles the queue against the database on every startup (catching any students added while the monitor was down), then appends new students to the queue in real time as they appear. Updates and removals still go directly to Entur.
+2. **Ongoing — monitor adds new students**: the monitor process (`npm run monitor-orders`) reconciles the queue against the database on every startup (catching any students added while the monitor was down), then appends new students to the queue in real time as they appear. Updated orders go directly to Entur too, but only once the queue confirms the order was actually sent already — one that's still `pending`/`failed` in the queue is skipped/re-queued instead, so it isn't sent before the drain's own send. Removals are audit-log only. See the dispatch decision diagram in `docs/ENTUR_INTEGRATION.md` for the full flow.
 
 3. **Scheduled drain — Task Scheduler sends batches**: each scheduled run picks the next N pending students from the queue (`SYNC_QUEUE_LIMIT`, default 10) and sends them to Entur. Each student is marked `sent` on success, or kept `pending` for retry. After 3 failures the entry is marked `failed`, skipped permanently, and a Teams alert ("Queue entry permanently failed") is sent. If a whole drain run fails outright (e.g. Entur/DB unreachable), a separate "Queue drain sync failed" Teams alert is sent as well. The queue file persists between runs — progress is never lost even if the task is interrupted, and reads/writes are safe to run concurrently from the monitor and the scheduled drain job (each write reloads the file first, so the two processes never clobber each other's changes).
 
@@ -177,8 +177,6 @@ export const fareContractRules: FareContractRule[] = [
 
 Each rule is independent. Within a rule, `schoolIds` and `classNamePatterns` use AND logic (both must match if both are set). Rules are evaluated top-to-bottom — first match wins. Rebuild after editing: `npm run build`.
 
-See `docs/ENTUR_INTEGRATION.md` for the full type and detailed matching rules.
-
 See `docs/ENTUR_INTEGRATION.md` for the full `OrganisationFareContractConfig` type and detailed fare contract documentation.
 
 ## Validation Usage
@@ -206,7 +204,8 @@ npm run sync-entur -- -- --validate --method filtered --classes "1A,1B" --grade-
   - `logs/student-order-monitor.error.log`
   - `logs/student-order-monitor.critical.log`
 - Retries with exponential backoff are applied when Entur requests fail.
-- Daily summary and critical failure notifications are sent to Teams if `TEAMS_WEBHOOK_URL` is set. The scheduled queue-drain job (`sync-entur-queue-live`) sends its own Teams alerts too — one per permanently-failed student, and one if an entire drain run fails outright.
+- Before a direct send, the request is validated (same checks as `--validate`); an invalid request (e.g. endDate before startDate) is never sent to Entur — it's logged and alerted to Teams separately from an actual send failure. See "Validation on the monitor's direct-send path" in `docs/ENTUR_INTEGRATION.md`.
+- Daily summary and critical failure notifications are sent to Teams if `TEAMS_WEBHOOK_URL` is set. The scheduled queue-drain job (`sync-entur-queue-live`) sends its own Teams alerts too — one per permanently-failed student, and one if an entire drain run fails outright. Invalid requests (e.g. a student missing a required phone number) are also alerted to Teams immediately on first validation failure, before any retries are attempted.
 - Current monitor query/filtering is defined directly in `src/monitor-student-orders.ts`.
 
 ## Additional Notes

@@ -21,6 +21,7 @@ const validRequest = (): PostSkoleskyssRequest => ({
     endDate: '2026-06-15',
     zones: [{ groupOfTariffZoneId: 'TEL:GroupOfTariffZones:1' }],
   },
+  studentDetails: { phone: { number: '90000000', countryCode: '+47' } },
 });
 
 describe('validateSkoleskyssRequest', () => {
@@ -179,6 +180,34 @@ describe('validateSkoleskyssRequest', () => {
     const result = service.validateSkoleskyssRequest(req);
     assert.equal(result.isValid, false);
     assert.ok(result.errors.some((e) => e.includes('countryCode')));
+  });
+
+  test('missing phone number fails', () => {
+    const req = { ...validRequest(), studentDetails: undefined };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('studentDetails.phone.number is required')));
+    assert.ok(result.errors.some((e) => e.includes('42')));
+  });
+
+  test('studentDetails present but phone absent fails', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { email: 'ola@test.no' },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('studentDetails.phone.number is required')));
+  });
+
+  test('phone present with empty number string fails', () => {
+    const req: PostSkoleskyssRequest = {
+      ...validRequest(),
+      studentDetails: { phone: { number: '' } },
+    };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('studentDetails.phone.number is required')));
   });
 
   test('validity.calendar and validity.travelWindow are optional — valid request without them', () => {

@@ -318,8 +318,12 @@ export class EnturApiService {
       }
     }
 
-    // Validate optional phone number format if provided
-    if (request.studentDetails?.phone?.number) {
+    // Phone number is required for skoleskyss requests
+    if (!request.studentDetails?.phone?.number) {
+      errors.push(
+        `studentDetails.phone.number is required but missing for student ${request.studentId} (application ${request.applicationId})`
+      );
+    } else {
       const phoneNumber = request.studentDetails.phone.number;
       const countryCode = request.studentDetails.phone.countryCode;
 

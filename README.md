@@ -61,6 +61,7 @@ SYNC_CLASSES=1A,1B
 SYNC_GRADE_IDS=1,2
 SYNC_STUDENT_ID=81722
 SYNC_STUDENT_IDS=81722,12345
+SYNC_SCHOOL_YEAR=2026        # Calendar year the school year starts in; defaults to the current one
 ```
 
 ## Commands
@@ -106,6 +107,28 @@ Multiple students sync (single-student flow per ID):
 npm run sync-entur -- -- --method single --student-ids "81722,12345,77793"
 ```
 
+## School Year Selection
+
+A student's order belongs to a school year when it **overlaps** that year's calendar span,
+August 1st to July 31st. An order ending in the autumn term (e.g. 2026-12-19) belongs to the
+2026-2027 school year just as much as one ending 2027-06-20.
+
+All commands default to the school year we are currently in. To target another one, pass the
+calendar year it *starts* in:
+
+```bash
+npm run sync-entur -- -- --method all --school-year 2026   # the 2026-2027 school year
+```
+
+Every sync and validation run logs the resolved window, e.g.
+`School year 2026-2027 (orders overlapping 2026-08-01 -> 2027-07-31)` — check this line first
+when a student is unexpectedly missing.
+
+Note the monitor resolves its window **once, at startup**, and cannot pick up a new school
+year while running. It sends a Teams alert and writes to the critical log once the calendar
+passes the year it started with; restart it and run `npm run sync-entur-queue-rebuild` when
+that happens.
+
 ## Queue Mode
 
 Queue mode is designed for incremental rollout: Entur can verify a small batch before the full sync is enabled.
@@ -123,7 +146,8 @@ Three separate roles keep the queue in sync:
 ### Queue commands
 
 ```bash
-# Dry-run: inspect what would be sent (builds queue if missing)
+# Dry-run: inspect what would be sent (builds queue if missing).
+# Never modifies queue state — no entry is marked sent or failed.
 npm run sync-entur-queue
 
 # Live: send next 10 students to Entur

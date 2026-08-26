@@ -9,6 +9,16 @@ export interface SchoolYear {
 }
 
 /**
+ * The calendar span a school year actually covers: August 1st to August 1st the following year.
+ * `start` is inclusive, `end` is exclusive — an order belongs to the school year when it
+ * overlaps [start, end).
+ */
+export interface SchoolYearRange {
+  start: Date;
+  end: Date;
+}
+
+/**
  * Helper function to calculate school year based on Norwegian school system
  * School year runs from August to June (e.g., August 2025 - June 2026 = "2025-2026")
  */
@@ -42,6 +52,51 @@ export function getSchoolYearByGraduationYear(graduationYear: number): SchoolYea
     yearString: `${startYear}-${endYear}`,
     graduationYear: endYear.toString()
   };
+}
+
+/**
+ * Helper function to get the school year that starts in a given calendar year
+ * (e.g. 2026 -> the 2026-2027 school year)
+*/
+export function getSchoolYearByStartYear(startYear: number): SchoolYear {
+  return getSchoolYearByGraduationYear(startYear + 1);
+}
+
+/**
+ * Resolve the school year to operate on. Pass the calendar year the school year *starts* in
+ * (e.g. '2026' for 2026-2027); omit it to use the school year we are currently in.
+*/
+export function resolveSchoolYear(startYear?: string | number): SchoolYear {
+  if (startYear === undefined || startYear === '') {
+    return calculateSchoolYear();
+  }
+
+  const parsed = Number(startYear);
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Invalid school year start '${startYear}'. Expected the calendar year the school year starts in, e.g. 2026.`);
+  }
+
+  return getSchoolYearByStartYear(parsed);
+}
+
+/**
+ * Calendar bounds of a school year, used to select the orders belonging to it.
+ * Dates are built in UTC to match how the mssql driver sends them.
+ */
+export function getSchoolYearRange(schoolYear: SchoolYear): SchoolYearRange {
+  return {
+    start: new Date(Date.UTC(schoolYear.startYear, 7, 1)), // August 1st, inclusive
+    end: new Date(Date.UTC(schoolYear.endYear, 7, 1))      // August 1st the year after, exclusive
+  };
+}
+
+/**
+ * Human-readable form of a school year range for logs, showing the last included day
+ * rather than the exclusive upper bound (e.g. "2026-08-01 -> 2027-07-31").
+ */
+export function formatSchoolYearRange(range: SchoolYearRange): string {
+  const lastIncludedDay = new Date(range.end.getTime() - 24 * 60 * 60 * 1000);
+  return `${range.start.toISOString().split('T')[0]} -> ${lastIncludedDay.toISOString().split('T')[0]}`;
 }
 
 /**

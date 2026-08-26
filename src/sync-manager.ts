@@ -5,7 +5,14 @@ import { QueueService } from './services/queue.service';
 import { appLogger } from './services/logger.service';
 import { sendTeamsNotification } from './services/teams-notifier.service';
 import { StudentWithDetails } from './types/user.types';
-import { calculateSchoolYear, mapStudentRecordToEnturRequest } from './utils';
+import {
+  SchoolYear,
+  calculateSchoolYear,
+  decideDrainOutcome,
+  formatSchoolYearRange,
+  getSchoolYearRange,
+  mapStudentRecordToEnturRequest
+} from './utils';
 
 /**
  * SyncManager is responsible for orchestrating the synchronization of student data with the Entur API.
@@ -75,60 +82,51 @@ export class SyncManager {
     }
   }
 
-  async syncAllStudents(startYear?: string, endYear?: string): Promise<SyncResult> {
-    const currentSchoolYear = calculateSchoolYear();
-    const start = startYear || currentSchoolYear.graduationYear;
-    const end = endYear || (currentSchoolYear.endYear + 1).toString();
+  async syncAllStudents(schoolYear?: SchoolYear): Promise<SyncResult> {
+    const range = getSchoolYearRange(schoolYear || calculateSchoolYear());
 
-    this.log('info', `Syncing all videregående students for ${start}-${end}`);
-    
-    const students = await this.studentService.getVideregaaendeStudents(start, end);
+    this.log('info', `Syncing all videregående students for orders overlapping ${formatSchoolYearRange(range)}`);
+
+    const students = await this.studentService.getVideregaaendeStudents(range);
     return this.processBatch(students, 'all-students');
   }
 
   async syncStudentsByClasses(
-    classes: string[], 
-    gradeIds: string[], 
-    startYear?: string, 
-    endYear?: string
+    classes: string[],
+    gradeIds: string[],
+    schoolYear?: SchoolYear
   ): Promise<SyncResult> {
-    const currentSchoolYear = calculateSchoolYear();
-    const start = startYear || currentSchoolYear.graduationYear;
-    const end = endYear || (currentSchoolYear.endYear + 1).toString();
+    const range = getSchoolYearRange(schoolYear || calculateSchoolYear());
 
     this.log('info', `Syncing students from classes: ${classes.join(', ')}`);
-    
+
     const students = await this.studentService.getVideregaaendeStudentsFromClasses(
-      start, end, classes, gradeIds
+      range, classes, gradeIds
     );
     return this.processBatch(students, 'filtered-students');
   }
 
   async syncSingleStudent(
-    studentId: string, 
-    startYear?: string, 
-    endYear?: string
+    studentId: string,
+    schoolYear?: SchoolYear
   ): Promise<SyncResult> {
-    const currentSchoolYear = calculateSchoolYear();
-    const start = startYear || currentSchoolYear.graduationYear;
-    const end = endYear || (currentSchoolYear.endYear + 1).toString();
+    const range = getSchoolYearRange(schoolYear || calculateSchoolYear());
 
     this.log('info', `Syncing single student: ${studentId}`);
     this.log('debug', 'SyncManager.syncSingleStudent called');
     this.log('debug', 'About to call studentService.getSingleStudent');
-    
-    const students = await this.studentService.getSingleStudent(start, end, studentId);
-    
+
+    const students = await this.studentService.getSingleStudent(range, studentId);
+
     this.log('debug', 'studentService.getSingleStudent completed');
     this.log('debug', `Found ${students.length} students`);
-    
+
     return this.processBatch(students, 'single-student');
   }
 
   async syncMultipleStudents(
     studentIds: string[],
-    startYear?: string,
-    endYear?: string
+    schoolYear?: SchoolYear
   ): Promise<SyncResult> {
     const normalizedStudentIds = [...new Set(studentIds.map(id => id.trim()).filter(Boolean))];
 
@@ -150,7 +148,7 @@ export class SyncManager {
 
     for (const studentId of normalizedStudentIds) {
       try {
-        const singleResult = await this.syncSingleStudent(studentId, startYear, endYear);
+        const singleResult = await this.syncSingleStudent(studentId, schoolYear);
         aggregateResult.totalStudents += singleResult.totalStudents;
         aggregateResult.successCount += singleResult.successCount;
         aggregateResult.failedCount += singleResult.failedCount;
@@ -319,10 +317,10 @@ export class SyncManager {
     return result;
   }
 
-  async getAllStudentsForQueue(startYear: string, endYear: string): Promise<StudentWithDetails[]> {
+  async getAllStudentsForQueue(schoolYear: SchoolYear): Promise<StudentWithDetails[]> {
     try {
       await this.db.connect();
-      return await this.studentService.getVideregaaendeStudents(startYear, endYear);
+      return await this.studentService.getVideregaaendeStudents(getSchoolYearRange(schoolYear));
     } finally {
       await this.db.disconnect();
     }
@@ -350,9 +348,11 @@ export class SyncManager {
 
     appLogger.info('Processing {EntryCount} queue entries', entries.length);
 
-    const currentSchoolYear = calculateSchoolYear();
-    const startYear = currentSchoolYear.graduationYear;
-    const endYear = (currentSchoolYear.endYear + 1).toString();
+    if (this.options.dryRun) {
+      appLogger.info('DRY RUN: queue state will not be modified — no entry is marked sent or failed');
+    }
+
+    const range = getSchoolYearRange(calculateSchoolYear());
 
     const alertIfPermanentlyFailed = async (entryOrdersId: string, entryStudentId: string, becamePermanentlyFailed: boolean, error: string) => {
       if (!becamePermanentlyFailed) return;
@@ -369,14 +369,16 @@ export class SyncManager {
 
       for (const entry of entries) {
         try {
-          const students = await this.studentService.getSingleStudent(startYear, endYear, entry.studentId);
+          const students = await this.studentService.getSingleStudent(range, entry.studentId);
 
           if (students.length === 0) {
             const msg = `Student ${entry.studentId} not found in DB for current school year`;
-            const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, msg);
-            await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, msg);
             result.failedCount++;
             result.errors.push(`[${entry.ordersId}] ${msg}`);
+            if (!this.options.dryRun) {
+              const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, msg);
+              await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, msg);
+            }
             continue;
           }
 
@@ -386,18 +388,20 @@ export class SyncManager {
           result.skippedCount += batchResult.skippedCount;
           result.errors.push(...batchResult.errors);
 
-          if (batchResult.failedCount === 0 && batchResult.successCount > 0) {
+          const outcome = decideDrainOutcome(batchResult, this.options.dryRun);
+          if (outcome.action === 'mark_sent') {
             queueService.markSent(entry.ordersId);
-          } else {
-            const errMsg = batchResult.errors[0] ?? 'processSingleBatch reported failure';
-            const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, errMsg);
-            await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, errMsg);
+          } else if (outcome.action === 'mark_failed') {
+            const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, outcome.error);
+            await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, outcome.error);
           }
         } catch (err: any) {
-          const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, err.message);
-          await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, err.message);
           result.failedCount++;
           result.errors.push(`[${entry.ordersId}] ${err.message}`);
+          if (!this.options.dryRun) {
+            const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, err.message);
+            await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, err.message);
+          }
         }
       }
     } finally {
@@ -421,7 +425,7 @@ export class SyncManager {
 
   async validateAllMethods(): Promise<{ [method: string]: boolean }> {
     const results: { [method: string]: boolean } = {};
-    const currentSchoolYear = calculateSchoolYear();
+    const range = getSchoolYearRange(calculateSchoolYear());
 
     try {
       this.log('info', 'Connecting to database for validation...');
@@ -439,10 +443,7 @@ export class SyncManager {
       // Test all methods
       this.log('info', 'Testing getVideregaaendeStudents method...');
       try {
-        await this.studentService.getVideregaaendeStudents(
-          currentSchoolYear.graduationYear, 
-          (currentSchoolYear.endYear + 1).toString()
-        );
+        await this.studentService.getVideregaaendeStudents(range);
         results.getVideregaaendeStudents = true;
         this.log('info', 'getVideregaaendeStudents: ✅ Success');
       } catch (error: any) {
@@ -453,8 +454,7 @@ export class SyncManager {
       this.log('info', 'Testing getVideregaaendeStudentsFromClasses method...');
       try {
         await this.studentService.getVideregaaendeStudentsFromClasses(
-          currentSchoolYear.graduationYear,
-          (currentSchoolYear.endYear + 1).toString(),
+          range,
           ['TEST'],
           ['1']
         );
@@ -473,11 +473,7 @@ export class SyncManager {
 
       this.log('info', 'Testing getSingleStudent method...');
       try {
-        await this.studentService.getSingleStudent(
-          currentSchoolYear.graduationYear,
-          (currentSchoolYear.endYear + 1).toString(),
-          '12345'
-        );
+        await this.studentService.getSingleStudent(range, '12345');
         results.getSingleStudent = true;
         this.log('info', 'getSingleStudent: ✅ Success');
       } catch (error: any) {

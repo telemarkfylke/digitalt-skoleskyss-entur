@@ -2,6 +2,7 @@ import './env';
 import { DatabaseService } from './services/database.service';
 import { appLogger, flushLogs } from './services/logger.service';
 import { StudentService } from './services/student.service';
+import { calculateSchoolYear, formatSchoolYearRange, getSchoolYearRange } from './utils';
 
 class Application {
   private databaseService: DatabaseService;
@@ -20,8 +21,10 @@ class Application {
       await this.databaseService.connect();
       appLogger.debug('Database connected successfully');
       
-      appLogger.debug('Fetching videregaaende students that end in 2026');
-      const students = await this.studentService.getVideregaaendeStudents('2026', '2027');
+      const schoolYear = calculateSchoolYear();
+      const range = getSchoolYearRange(schoolYear);
+      appLogger.debug('Fetching videregaaende students with orders overlapping {Range}', formatSchoolYearRange(range));
+      const students = await this.studentService.getVideregaaendeStudents(range);
       appLogger.debug('Found {StudentCount} students', students.length);
       
       if (students.length > 0) {

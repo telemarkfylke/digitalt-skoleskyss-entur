@@ -22,7 +22,7 @@
     "sync-entur-validate-single": "ts-node src/sync-students-to-entur.ts --validate --method single",
     "sync-entur-validate-all": "ts-node src/sync-students-to-entur.ts --validate --method all",
     "watch": "tsc --watch",
-    "test": "node --require ts-node/register --test tests/config/fare-contract-config.test.ts tests/services/entur-skoleskyss.service.test.ts tests/utils/entur-request-mapper.test.ts tests/utils/dedupe-orders.utils.test.ts tests/utils/queue-dispatch-decision.utils.test.ts tests/services/queue.service.test.ts tests/services/teams-notifier.service.test.ts",
+    "test": "node --require ts-node/register --test tests/config/fare-contract-config.test.ts tests/services/entur-skoleskyss.service.test.ts tests/utils/entur-request-mapper.test.ts tests/utils/dedupe-orders.utils.test.ts tests/utils/queue-dispatch-decision.utils.test.ts tests/utils/queue-drain-outcome.utils.test.ts tests/utils/school-year.utils.test.ts tests/services/queue.service.test.ts tests/services/teams-notifier.service.test.ts",
     "sync-entur-queue": "ts-node src/sync-students-to-entur.ts --method queue --dry-run true",
     "sync-entur-queue-live": "ts-node src/sync-students-to-entur.ts --method queue --dry-run false",
     "sync-entur-queue-rebuild": "ts-node src/sync-students-to-entur.ts --method queue --rebuild-queue true --dry-run true"

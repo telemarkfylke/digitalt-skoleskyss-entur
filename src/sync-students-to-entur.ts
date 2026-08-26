@@ -1,7 +1,7 @@
 import './env';
 import { SyncManager, SyncOptions } from './sync-manager';
 import { QueueService } from './services/queue.service';
-import { calculateSchoolYear, formatSchoolYear } from './utils';
+import { formatSchoolYear, formatSchoolYearRange, getSchoolYearRange, resolveSchoolYear } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { sendTeamsNotification } from './services/teams-notifier.service';
 
@@ -11,8 +11,8 @@ interface SyncConfig {
   gradeIds?: string[];
   studentId?: string;
   studentIds?: string[];
-  startYear?: string;
-  endYear?: string;
+  // Calendar year the school year starts in, e.g. '2026' for the 2026-2027 school year.
+  schoolYearStart?: string;
   dryRun?: boolean;
   batchSize?: number;
   logLevel?: 'error' | 'warn' | 'info' | 'debug';
@@ -42,6 +42,7 @@ const getSyncConfig = (): SyncConfig => {
   const gradeIds = (getFirstDefinedEnv('SYNC_GRADE_IDS', 'npm_config_grade_ids') || '').split(',').map(v => v.trim()).filter(Boolean);
   const studentId = getFirstDefinedEnv('SYNC_STUDENT_ID', 'npm_config_student_id');
   const studentIds = (getFirstDefinedEnv('SYNC_STUDENT_IDS', 'npm_config_student_ids') || '').split(',').map(id => id.trim()).filter(Boolean);
+  const schoolYearStart = getFirstDefinedEnv('SYNC_SCHOOL_YEAR', 'npm_config_school_year');
   const dryRunValue = getFirstDefinedEnv('SYNC_DRY_RUN', 'npm_config_dry_run');
   const dryRun = dryRunValue !== 'false'; // Default to true for safety
   const batchSize = parseInt(getFirstDefinedEnv('SYNC_BATCH_SIZE', 'npm_config_batch_size') || '10', 10);
@@ -58,6 +59,7 @@ const getSyncConfig = (): SyncConfig => {
     gradeIds,
     studentId,
     studentIds,
+    schoolYearStart,
     dryRun,
     batchSize,
     logLevel,
@@ -75,12 +77,12 @@ async function syncStudentsToEntur(config?: SyncConfig) {
     ...(config || {})
   };
   
-  // Get current school year for defaults
-  const currentSchoolYear = calculateSchoolYear();
-  const startYear = syncConfig.startYear || currentSchoolYear.graduationYear;
-  const endYear = syncConfig.endYear || (currentSchoolYear.endYear + 1).toString();
-  
-  appLogger.info(`School year range: ${startYear} - ${endYear}`);
+  // Resolve the school year to sync (defaults to the one we are currently in)
+  const schoolYear = resolveSchoolYear(syncConfig.schoolYearStart);
+
+  appLogger.info(
+    `School year ${formatSchoolYear(schoolYear, 'full')} (orders overlapping ${formatSchoolYearRange(getSchoolYearRange(schoolYear))})`
+  );
   appLogger.info(`Sync method: ${syncConfig.method}`);
   appLogger.info(`Dry run: ${syncConfig.dryRun ? 'Yes' : 'No'}`);
   appLogger.info(`Batch size: ${syncConfig.batchSize}`);
@@ -102,7 +104,7 @@ async function syncStudentsToEntur(config?: SyncConfig) {
     switch (syncConfig.method) {
       case 'all':
         appLogger.info('Syncing all videregående students...');
-        result = await syncManager.syncAllStudents(startYear, endYear);
+        result = await syncManager.syncAllStudents(schoolYear);
         break;
         
       case 'filtered':
@@ -115,8 +117,7 @@ async function syncStudentsToEntur(config?: SyncConfig) {
         result = await syncManager.syncStudentsByClasses(
           syncConfig.classes,
           syncConfig.gradeIds,
-          startYear,
-          endYear
+          schoolYear
         );
         break;
         
@@ -125,8 +126,7 @@ async function syncStudentsToEntur(config?: SyncConfig) {
           appLogger.info(`Syncing multiple students: ${syncConfig.studentIds.join(', ')}`);
           result = await syncManager.syncMultipleStudents(
             syncConfig.studentIds,
-            startYear,
-            endYear
+            schoolYear
           );
           break;
         }
@@ -137,8 +137,7 @@ async function syncStudentsToEntur(config?: SyncConfig) {
         appLogger.info(`Syncing single student: ${syncConfig.studentId}`);
         result = await syncManager.syncSingleStudent(
           syncConfig.studentId,
-          startYear,
-          endYear
+          schoolYear
         );
         break;
         
@@ -156,7 +155,7 @@ async function syncStudentsToEntur(config?: SyncConfig) {
               ? 'Rebuilding queue (--rebuild-queue requested)...'
               : 'Queue file not found — building from database for the first time...'
           );
-          const allStudents = await syncManager.getAllStudentsForQueue(startYear, endYear);
+          const allStudents = await syncManager.getAllStudentsForQueue(schoolYear);
           queueService.buildQueue(allStudents);
         }
 
@@ -320,6 +319,7 @@ function parseCommandLineArgs(): SyncConfig | null {
     appLogger.info('');
     appLogger.info('Advanced options:');
     appLogger.info('npm run sync-entur -- --method all --dry-run false --batch-size 20 --log-level debug');
+    appLogger.info('npm run sync-entur -- --method all --school-year 2026   # 2026-2027 school year (defaults to the current one)');
     appLogger.info('PowerShell safe: npm run sync-entur -- -- --method all --dry-run false --batch-size 20 --log-level debug');
     appLogger.info('');
     appLogger.info('Validation options:');
@@ -334,6 +334,7 @@ function parseCommandLineArgs(): SyncConfig | null {
     appLogger.info('SYNC_GRADE_IDS=1,2');
     appLogger.info('SYNC_STUDENT_ID=12345');
     appLogger.info('SYNC_STUDENT_IDS=12345,67890');
+    appLogger.info('SYNC_SCHOOL_YEAR=2026');
     appLogger.info('SYNC_DRY_RUN=false');
     appLogger.info('SYNC_BATCH_SIZE=20');
     appLogger.info('SYNC_LOG_LEVEL=debug');
@@ -435,13 +436,9 @@ function parseCommandLineArgs(): SyncConfig | null {
         i++;
         break;
 
-      case '--start-year':
-        config.startYear = args[i + 1];
-        i++;
-        break;
-
-      case '--end-year':
-        config.endYear = args[i + 1];
+      case '--school-year':
+        // Calendar year the school year starts in, e.g. 2026 for 2026-2027
+        config.schoolYearStart = args[i + 1];
         i++;
         break;
     }
@@ -511,24 +508,23 @@ async function validateAllMethods() {
 }
 
 // Validate single student method
-async function validateSingleStudent(studentId: string, startYear?: string, endYear?: string) {
+async function validateSingleStudent(studentId: string, schoolYearStart?: string) {
   appLogger.info(`Validating single student sync for ID: ${studentId}`);
   appLogger.debug('DEBUG: validateSingleStudent called');
-  
+
   try {
     appLogger.debug('DEBUG: Creating SyncManager');
     const syncManager = new SyncManager({ dryRun: true, logLevel: 'debug' });
-    
-    // Get current school year for defaults
-    const currentSchoolYear = calculateSchoolYear();
-    const start = startYear || currentSchoolYear.graduationYear;
-    const end = endYear || (currentSchoolYear.endYear + 1).toString();
-    
-    appLogger.info(`Using school year range: ${start} - ${end}`);
+
+    const schoolYear = resolveSchoolYear(schoolYearStart);
+
+    appLogger.info(
+      `Using school year ${formatSchoolYear(schoolYear, 'full')} (orders overlapping ${formatSchoolYearRange(getSchoolYearRange(schoolYear))})`
+    );
     appLogger.debug('DEBUG: About to call syncManager.syncSingleStudent');
-    
+
     // Test the single student sync
-    const result = await syncManager.syncSingleStudent(studentId, start, end);
+    const result = await syncManager.syncSingleStudent(studentId, schoolYear);
     
     appLogger.debug('DEBUG: syncSingleStudent completed');
     appLogger.debug('Validation Results:');
@@ -547,7 +543,7 @@ async function validateSingleStudent(studentId: string, startYear?: string, endY
     if (result.totalStudents === 0) {
       appLogger.debug('No matching student found. Check:');
       appLogger.debug(`-- Student ID exists: ${studentId}`);
-      appLogger.debug(`-- Student is in school year range: ${start} - ${end}`);
+      appLogger.debug(`-- Student order overlaps: ${formatSchoolYearRange(getSchoolYearRange(schoolYear))}`);
       appLogger.debug(`-- Student is from videregående schools`);
       appLogger.debug(`-- Student record is active`);
     } else {
@@ -561,20 +557,18 @@ async function validateSingleStudent(studentId: string, startYear?: string, endY
   }
 }
 
-async function validateMultipleStudents(studentIds: string[], startYear?: string, endYear?: string) {
+async function validateMultipleStudents(studentIds: string[], schoolYearStart?: string) {
   appLogger.info(`Validating multiple students sync`);
   appLogger.info(`Student IDs: ${studentIds.join(', ')}`);
 
   try {
     const syncManager = new SyncManager({ dryRun: true, logLevel: 'debug' });
 
-    const currentSchoolYear = calculateSchoolYear();
-    const start = startYear || currentSchoolYear.graduationYear;
-    const end = endYear || (currentSchoolYear.endYear + 1).toString();
+    const schoolYear = resolveSchoolYear(schoolYearStart);
 
-    appLogger.debug(`Using school year range: ${start} - ${end}`);
+    appLogger.debug(`Using school year range: ${formatSchoolYearRange(getSchoolYearRange(schoolYear))}`);
 
-    const result = await syncManager.syncMultipleStudents(studentIds, start, end);
+    const result = await syncManager.syncMultipleStudents(studentIds, schoolYear);
 
     appLogger.debug('Validation Results:');
     appLogger.debug(`Students found: ${result.totalStudents}`);
@@ -599,27 +593,23 @@ async function validateMultipleStudents(studentIds: string[], startYear?: string
 
 // Validate filtered students method
 async function validateFilteredStudents(
-  classes: string[], 
-  gradeIds: string[], 
-  startYear?: string, 
-  endYear?: string
+  classes: string[],
+  gradeIds: string[],
+  schoolYearStart?: string
 ) {
   appLogger.debug(`Validating filtered student sync`);
   appLogger.debug(`Classes: ${classes.join(', ')}`);
   appLogger.debug(`Grade IDs: ${gradeIds.join(', ')}`);
-  
+
   try {
     const syncManager = new SyncManager({ dryRun: true, logLevel: 'info' });
-    
-    // Get current school year for defaults
-    const currentSchoolYear = calculateSchoolYear();
-    const start = startYear || currentSchoolYear.graduationYear;
-    const end = endYear || (currentSchoolYear.endYear + 1).toString();
-    
-    appLogger.debug(`Using school year range: ${start} - ${end}`);
-    
+
+    const schoolYear = resolveSchoolYear(schoolYearStart);
+
+    appLogger.debug(`Using school year range: ${formatSchoolYearRange(getSchoolYearRange(schoolYear))}`);
+
     // Test the filtered sync
-    const result = await syncManager.syncStudentsByClasses(classes, gradeIds, start, end);
+    const result = await syncManager.syncStudentsByClasses(classes, gradeIds, schoolYear);
     
     appLogger.debug('Validation Results:');
     appLogger.debug(`Students found: ${result.totalStudents}`);
@@ -638,7 +628,7 @@ async function validateFilteredStudents(
       appLogger.debug('No matching students found. Check:');
       appLogger.debug(`-- Classes exist: ${classes.join(', ')}`);
       appLogger.debug(`-- Grade IDs exist: ${gradeIds.join(', ')}`);
-      appLogger.debug(`-- Students are in school year range: ${start} - ${end}`);
+      appLogger.debug(`-- Student orders overlap: ${formatSchoolYearRange(getSchoolYearRange(schoolYear))}`);
       appLogger.debug(`-- Students are from videregående schools`);
       appLogger.debug(`-- Student records are active`);
     } else {
@@ -685,7 +675,7 @@ if (require.main === module) {
       appLogger.info('═══ Validating Single Student Sync ═══');
       appLogger.info(`Target: Student ID ${config.studentId}`);
       
-      validateSingleStudent(config.studentId, config.startYear, config.endYear)
+      validateSingleStudent(config.studentId, config.schoolYearStart)
         .then(() => {
           appLogger.info('Single student validation completed');
           return exitWithCode(0);
@@ -701,7 +691,7 @@ if (require.main === module) {
       appLogger.info('═══ Validating Multiple Students Sync ═══');
       appLogger.info(`Target: Student IDs ${config.studentIds.join(', ')}`);
 
-      validateMultipleStudents(config.studentIds, config.startYear, config.endYear)
+      validateMultipleStudents(config.studentIds, config.schoolYearStart)
         .then(() => {
           appLogger.info('Multiple student validation completed');
           return exitWithCode(0);
@@ -719,7 +709,7 @@ if (require.main === module) {
       appLogger.info('═══ Validating Filtered Student Sync ═══');
       appLogger.info(`Target: Classes ${config.classes.join(', ')}, Grades ${config.gradeIds.join(', ')}`);
       
-      validateFilteredStudents(config.classes, config.gradeIds, config.startYear, config.endYear)
+      validateFilteredStudents(config.classes, config.gradeIds, config.schoolYearStart)
         .then(() => {
           appLogger.info('Filtered student validation completed');
           return exitWithCode(0);

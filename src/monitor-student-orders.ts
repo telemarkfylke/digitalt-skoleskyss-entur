@@ -3,7 +3,7 @@ import path from 'path';
 import { appendFile, mkdir } from 'fs/promises';
 import { DatabaseService } from './services/database.service';
 import { CustomQueryMonitor } from './services/custom-query-monitor.service';
-import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction } from './utils';
+import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, formatSchoolYearRange, getSchoolYearRange, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
@@ -192,6 +192,40 @@ const scheduleDailySummary = (): void => {
   }, timeoutMs);
 };
 
+const SCHOOL_YEAR_ROLLOVER_CHECK_MS = 60 * 60 * 1000; // hourly
+
+const scheduleSchoolYearRolloverWatchdog = (startupYearString: string): void => {
+  let alerted = false;
+
+  setInterval(async () => {
+    const currentYearString = calculateSchoolYear().yearString;
+    if (alerted || currentYearString === startupYearString) return;
+
+    alerted = true;
+    const details = [
+      `Monitor started for school year ${startupYearString}, but it is now ${currentYearString}.`,
+      'The query window is fixed at startup, so no orders from the new school year are being detected.',
+      'Restart the monitor, then run: npm run sync-entur-queue-rebuild'
+    ].join('\n');
+
+    appLogger.error(
+      'School year rolled over from {StartupYear} to {CurrentYear} — monitor is still querying the old window. Restart required.',
+      startupYearString,
+      currentYearString
+    );
+
+    await writeJsonLine(CRITICAL_LOG_FILE, {
+      timestamp: new Date().toISOString(),
+      level: 'critical',
+      event: 'school_year_rollover_restart_required',
+      startupSchoolYear: startupYearString,
+      currentSchoolYear: currentYearString
+    });
+
+    await sendTeamsNotification('Monitor school year rollover — restart required', details);
+  }, SCHOOL_YEAR_ROLLOVER_CHECK_MS);
+};
+
 const exitWithCode = async (code: number): Promise<never> => {
   await flushLogs();
   process.exit(code);
@@ -205,9 +239,13 @@ async function monitorActiveStudentOrders() {
   try {
     appLogger.info('Starting Active Student Orders Monitoring...');
     
-    // Calculate current school year dynamically
+    // Calculate current school year dynamically. Note this is resolved once, at startup —
+    // the rollover watchdog below alerts if the calendar moves past it.
     const currentSchoolYear = calculateSchoolYear();
-    appLogger.info(`Monitoring school year: ${formatSchoolYear(currentSchoolYear, 'full')} (graduation: ${currentSchoolYear.graduationYear})`);
+    const schoolYearRange = getSchoolYearRange(currentSchoolYear);
+    appLogger.info(
+      `Monitoring school year: ${formatSchoolYear(currentSchoolYear, 'full')} (orders overlapping ${formatSchoolYearRange(schoolYearRange)})`
+    );
     
     // Connect to database
     await dbService.connect();
@@ -421,7 +459,7 @@ async function monitorActiveStudentOrders() {
       appLogger.error('Query monitoring error: {ErrorMessage}', error instanceof Error ? error.message : String(error));
     });
     const studentOrdersConfig = {
-      name: `ActiveStudentOrders${currentSchoolYear.graduationYear}`,
+      name: `ActiveStudentOrders${currentSchoolYear.yearString}`,
       query: `
        SELECT 
           o.Id as OrdersId,
@@ -450,17 +488,17 @@ async function monitorActiveStudentOrders() {
         INNER JOIN dbo.SchoolClasses sc ON sc.Id = o.SchoolClassId
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
         WHERE o.ToDate >= @param0
-          AND o.ToDate < @param1
+          AND o.FromDate < @param1
           AND s.Type = 1
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
           AND UsesMassTransit = 1
         ORDER BY o.ToDate DESC
       `,
-      
+
       params: [
-        new Date(`${currentSchoolYear.graduationYear}-01-01`), // Start of the year
-        new Date(`${currentSchoolYear.endYear + 1}-01-01`), // Start of the next year (exclusive)
+        schoolYearRange.start, // School year start (August 1st), inclusive
+        schoolYearRange.end, // School year end (August 1st the year after), exclusive
       ],
       interval: 5000, // Check every 5 seconds
       keyColumns: ['OrdersId'], // Use Order ID as unique identifier
@@ -504,8 +542,8 @@ async function monitorActiveStudentOrders() {
     
     appLogger.info('Listening for changes in Active Student Orders...');
     appLogger.info('This monitors your specific filtered dataset:');
-    appLogger.info(`Orders from ${formatSchoolYear(currentSchoolYear, 'full')} school year`);
-    appLogger.info(`Graduation year: ${currentSchoolYear.graduationYear}`);
+    appLogger.info(`Orders overlapping the ${formatSchoolYear(currentSchoolYear, 'full')} school year`);
+    appLogger.info(`Order date range: ${formatSchoolYearRange(schoolYearRange)}`);
     appLogger.info('Type 1 schools only (videregående)');
     appLogger.info('Active students only');
     appLogger.info('Ordered by UpdatedTime');
@@ -518,6 +556,11 @@ async function monitorActiveStudentOrders() {
 
     // Send one summary notification every day at midnight.
     scheduleDailySummary();
+
+    // The query window above is fixed for the lifetime of this process. Once the calendar
+    // rolls past the school year it was built for, the monitor keeps querying the old one and
+    // silently sees none of the new year's orders. Alert once so an operator can restart.
+    scheduleSchoolYearRolloverWatchdog(currentSchoolYear.yearString);
 
     // Optional: Show current statistics every 30 seconds
     setInterval(async () => {

@@ -1,7 +1,7 @@
 import { DatabaseService } from './database.service';
 import { StudentWithDetails } from '../types/user.types';
 import { appLogger } from './logger.service';
-import { filterOverriddenOrders, dedupeByOrderId } from '../utils';
+import { filterOverriddenOrders, dedupeByOrderId, SchoolYearRange, formatSchoolYearRange } from '../utils';
 
 
 export class StudentService {
@@ -61,10 +61,11 @@ export class StudentService {
     }
   }
 
-  // Get students from videregående schools that end in a specific year
-  async getVideregaaendeStudents(StartYear: String, EndYear: String): Promise<StudentWithDetails[]> {
+  // Get students from videregående schools whose order overlaps the given school year
+  async getVideregaaendeStudents(range: SchoolYearRange): Promise<StudentWithDetails[]> {
     try {
       await this.ensureConnected();
+      appLogger.debug('getVideregaaendeStudents school year range: {Range}', formatSchoolYearRange(range));
       const optimizedQuery = `
         SELECT 
           o.Id as OrdersId,
@@ -93,7 +94,7 @@ export class StudentService {
         INNER JOIN dbo.SchoolClasses sc ON sc.Id = o.SchoolClassId
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
         WHERE o.ToDate >= @param0
-          AND o.ToDate < @param1
+          AND o.FromDate < @param1
           AND s.Type = 1
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
@@ -102,8 +103,8 @@ export class StudentService {
       `;
 
       const result = await this.db.query(optimizedQuery, [
-        new Date(`${StartYear}-01-01`), // Start of the year
-        new Date(`${EndYear}-01-01`), // Start of the next year (exclusive)
+        range.start, // School year start (August 1st), inclusive
+        range.end, // School year end (August 1st the year after), exclusive
       ]);
 
       return this.filterStudentData(result.recordset, 'getVideregaaendeStudents');
@@ -113,9 +114,9 @@ export class StudentService {
     }
   }
 
-  // Get students from videregående schools that end in a specific year, filtered by class and grade
-  async getVideregaaendeStudentsFromClasses(StartYear: String, EndYear: String, Classes: string[], GradeId: string[]): Promise<StudentWithDetails[]> {
-    appLogger.debug('getVideregaaendeStudentsFromClasses inputs: StartYear={StartYear}, EndYear={EndYear}, Classes={Classes}, GradeId={GradeId}', String(StartYear), String(EndYear), Classes.join(','), GradeId.join(','));
+  // Get students from videregående schools whose order overlaps the given school year, filtered by class and grade
+  async getVideregaaendeStudentsFromClasses(range: SchoolYearRange, Classes: string[], GradeId: string[]): Promise<StudentWithDetails[]> {
+    appLogger.debug('getVideregaaendeStudentsFromClasses inputs: Range={Range}, Classes={Classes}, GradeId={GradeId}', formatSchoolYearRange(range), Classes.join(','), GradeId.join(','));
     // Classes and GradeId cannot be empty arrays. 
     if (Classes.length === 0) {
       throw new Error('Classes array cannot be empty');
@@ -153,7 +154,7 @@ export class StudentService {
         INNER JOIN dbo.SchoolClasses sc ON sc.Id = o.SchoolClassId
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
         WHERE o.ToDate >= @param0
-          AND o.ToDate < @param1
+          AND o.FromDate < @param1
           AND s.Type = 1
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
@@ -164,8 +165,8 @@ export class StudentService {
       `;
 
       const result = await this.db.query(optimizedQuery, [
-        new Date(`${StartYear}-01-01`), // Start of the year
-        new Date(`${EndYear}-01-01`), // Start of the next year (exclusive)
+        range.start, // School year start (August 1st), inclusive
+        range.end, // School year end (August 1st the year after), exclusive
         ...Classes, // Add class names as parameters
         ...GradeId, // Add grade IDs as parameters
       ]);
@@ -177,10 +178,11 @@ export class StudentService {
     }
   }
 
-  // Get a single student by ID from videregående schools that end in a specific year
-  async getSingleStudent(StartYear: String, EndYear: String, StudentId: String): Promise<StudentWithDetails[]> {
+  // Get a single student by ID from videregående schools whose order overlaps the given school year
+  async getSingleStudent(range: SchoolYearRange, StudentId: String): Promise<StudentWithDetails[]> {
     try {
       await this.ensureConnected();
+      appLogger.debug('getSingleStudent school year range: {Range}', formatSchoolYearRange(range));
       const optimizedQuery = `
         SELECT 
           o.Id as OrdersId,
@@ -209,7 +211,7 @@ export class StudentService {
         INNER JOIN dbo.SchoolClasses sc ON sc.Id = o.SchoolClassId
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
         WHERE o.ToDate >= @param0
-          AND o.ToDate < @param1
+          AND o.FromDate < @param1
           AND s.Type = 1
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
@@ -219,8 +221,8 @@ export class StudentService {
       `;
 
       const result = await this.db.query(optimizedQuery, [
-        new Date(`${StartYear}-01-01`), // Start of the year
-        new Date(`${EndYear}-01-01`), // Start of the next year (exclusive)
+        range.start, // School year start (August 1st), inclusive
+        range.end, // School year end (August 1st the year after), exclusive
         StudentId // Student ID as parameter
       ]);
 

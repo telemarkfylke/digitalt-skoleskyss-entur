@@ -6,3 +6,4 @@ export * from './overridden-orders.utils';
 export * from './entur-request-mapper.utils';
 export * from './dedupe-orders.utils';
 export * from './queue-dispatch-decision.utils';
+export * from './queue-drain-outcome.utils';

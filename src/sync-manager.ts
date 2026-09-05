@@ -11,7 +11,8 @@ import {
   decideDrainOutcome,
   formatSchoolYearRange,
   getSchoolYearRange,
-  mapStudentRecordToEnturRequest
+  mapStudentRecordToEnturRequest,
+  selectQueuedOrder
 } from './utils';
 
 /**
@@ -370,9 +371,12 @@ export class SyncManager {
       for (const entry of entries) {
         try {
           const students = await this.studentService.getSingleStudent(range, entry.studentId);
+          const selection = selectQueuedOrder(students, entry.ordersId);
 
-          if (students.length === 0) {
-            const msg = `Student ${entry.studentId} not found in DB for current school year`;
+          if (!selection.found) {
+            const msg = selection.reason === 'student_not_found'
+              ? `Student ${entry.studentId} not found in DB for current school year`
+              : `Order ${entry.ordersId} is no longer active for student ${entry.studentId} (superseded, inactive, or outside the school year)`;
             result.failedCount++;
             result.errors.push(`[${entry.ordersId}] ${msg}`);
             if (!this.options.dryRun) {
@@ -382,7 +386,8 @@ export class SyncManager {
             continue;
           }
 
-          const batchResult = await this.processSingleBatch(students);
+          // Only this entry's own order — never the student's other orders. See selectQueuedOrder.
+          const batchResult = await this.processSingleBatch([selection.order]);
           result.successCount += batchResult.successCount;
           result.failedCount += batchResult.failedCount;
           result.skippedCount += batchResult.skippedCount;

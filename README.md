@@ -220,6 +220,54 @@ npm run sync-entur -- -- --validate --method single --student-ids "81722,12345"
 npm run sync-entur -- -- --validate --method filtered --classes "1A,1B" --grade-ids "1,2"
 ```
 
+## Restarting the Monitor
+
+The monitor's startup reconciliation catches orders *added* while it was down, but not orders
+that *changed* — those edits are absorbed into the fresh baseline and never detected, so Entur
+keeps the stale version indefinitely.
+
+The repair is to re-send the affected students after the restart. Entur deduplicates on
+`studentId` and honours the newest post, so a re-send simply overwrites with current data and
+is always safe.
+
+### 1. Find who changed while it was down
+
+`Orders.UpdatedTime` and `People.UpdatedTime` tell you exactly that. Use the timestamp of the
+monitor's last log line before the restart — or just round down generously, since re-sending
+an unchanged student costs one request and changes nothing:
+
+```sql
+DECLARE @DownSince DATETIME = '2026-09-05T08:00:00';   -- when the monitor stopped
+DECLARE @Start DATE = '2026-08-01', @End DATE = '2027-08-01';  -- current school year
+
+SELECT DISTINCT o.StudentId
+FROM dbo.Orders o
+INNER JOIN dbo.People p ON p.Id = o.StudentId
+INNER JOIN dbo.Schools s ON s.Id = o.SchoolId
+INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
+WHERE o.ToDate >= @Start AND o.FromDate < @End
+  AND s.Type = 1 AND p.Discriminator LIKE 'Student' AND p.IsActive = 1
+  AND UsesMassTransit = 1
+  AND (o.UpdatedTime >= @DownSince OR p.UpdatedTime >= @DownSince);
+```
+
+### 2. Re-send just those students
+
+```bash
+npm run sync-entur-live-single --student-ids="81722,12345"
+```
+
+A few minutes of downtime usually returns zero or a handful of rows, so this is normally the
+whole job.
+
+### Full re-send
+
+`npm run sync-entur-live-all` re-sends every current student in batches of 10. Reach for it
+when the downtime window is unknown or long (an unplanned outage, a lost queue file), or as a
+periodic safety net to catch drift from any other cause. It is safe for the same reason, just
+slower — and students whose orders fail validation will re-alert to Teams each run, which is a
+useful signal that they still have no valid contract.
+
 ## Monitor Notes
 
 - `npm run monitor-orders` continuously polls SQL and detects new/updated/removed records.

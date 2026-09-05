@@ -7,3 +7,4 @@ export * from './entur-request-mapper.utils';
 export * from './dedupe-orders.utils';
 export * from './queue-dispatch-decision.utils';
 export * from './queue-drain-outcome.utils';
+export * from './queued-order-selection.utils';

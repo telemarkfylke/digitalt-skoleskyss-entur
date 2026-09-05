@@ -99,7 +99,10 @@ export class StudentService {
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
           AND UsesMassTransit = 1
-        ORDER BY o.ToDate DESC
+        -- Ascending: Entur honours the newest post per studentId, so the last order sent wins.
+        -- For a student with more than one order this makes the longest-running contract win,
+        -- which fails in the less harmful direction than cutting transport short.
+        ORDER BY o.ToDate ASC
       `;
 
       const result = await this.db.query(optimizedQuery, [
@@ -161,7 +164,10 @@ export class StudentService {
           AND sc.Name IN (${Classes.map((_, index) => `@param${index + 2}`).join(', ')})
           AND sc.GradeId IN (${GradeId.map((_, index) => `@param${index + 2 + Classes.length}`).join(', ')})
           AND UsesMassTransit = 1
-        ORDER BY o.ToDate DESC
+        -- Ascending: Entur honours the newest post per studentId, so the last order sent wins.
+        -- For a student with more than one order this makes the longest-running contract win,
+        -- which fails in the less harmful direction than cutting transport short.
+        ORDER BY o.ToDate ASC
       `;
 
       const result = await this.db.query(optimizedQuery, [
@@ -217,7 +223,10 @@ export class StudentService {
           AND p.IsActive = 1
           AND p.Id = @param2
           AND UsesMassTransit = 1
-        ORDER BY o.ToDate DESC
+        -- Ascending: Entur honours the newest post per studentId, so the last order sent wins.
+        -- For a student with more than one order this makes the longest-running contract win,
+        -- which fails in the less harmful direction than cutting transport short.
+        ORDER BY o.ToDate ASC
       `;
 
       const result = await this.db.query(optimizedQuery, [

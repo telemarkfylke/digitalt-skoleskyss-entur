@@ -253,6 +253,29 @@ The monitor handles this with a **startup reconciliation**: before `startMonitor
 
 ---
 
+## How Entur handles duplicate posts
+
+**Entur deduplicates on `studentId` and always honours the newest order posted.** Confirmed
+with Entur, 5 Sep 2026.
+
+This matters, because the queue and dispatch-decision logic above is built around *avoiding*
+duplicate sends and can read as though a duplicate were dangerous. It is not:
+
+- **Re-sending is safe.** Sending a student's order again overwrites their existing contract
+  with the same data. Where recovery is needed — a lost queue file, drift after monitor
+  downtime, an uncertain partial run — a full re-send (`npm run sync-entur-live-all`) is a
+  legitimate repair, not a risk. The queue's dedup rules exist to avoid pointless API traffic
+  and racing the scheduler, not to prevent corruption.
+- **But send order carries meaning.** Last post wins per student, so if more than one order
+  for the same student is posted in a single run, the last one silently becomes their
+  contract. Two consequences are built into the code:
+  - `syncFromQueue` sends only the order its queue entry refers to, never the student's other
+    orders (`selectQueuedOrder` in `src/utils/queued-order-selection.utils.ts`).
+  - The student queries sort `ORDER BY o.ToDate ASC`, so where a student does have more than
+    one order in one batch, the longest-running contract is posted last and wins.
+
+---
+
 ## Validation Rules
 
 `validateSkoleskyssRequest` checks:

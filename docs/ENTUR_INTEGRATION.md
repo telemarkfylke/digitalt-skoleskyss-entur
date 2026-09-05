@@ -187,19 +187,25 @@ The sync queue decouples student detection from Entur API calls, allowing contro
 flowchart TD
     A[Monitor detects a change] --> B{Change type}
 
-    B -->|new| N1["queueService.addEntry()<br/>queued as 'pending'"]
+    B -->|new| N0{PrimaryStatus = 2?}
+    N0 -->|no| N0a["Not queued —<br/>audit 'new_order_not_approved'"]
+    N0 -->|yes| N1["queueService.addEntry()<br/>queued as 'pending'"]
     N1 --> N2[Scheduled drain: sync-entur-queue-live]
-    N2 --> N3{validateSkoleskyssRequest}
+    N2 --> N2a{Still active in DB?}
+    N2a -->|no| N2b["markSkipped — retired on the<br/>first attempt, no retry, no alert"]
+    N2a -->|yes| N3{validateSkoleskyssRequest}
     N3 -->|invalid| N4[Stays pending/failed<br/>retried next scheduled run]
     N3 -->|valid| N5[createSkoleskyss]
     N5 -->|success| N6[markSent]
     N5 -->|failure| N7["markFailed — retry up to 3x,<br/>then permanently 'failed' + Teams alert"]
 
-    B -->|updated| U1["queueService.getEntry(ordersId)"]
+    B -->|updated| U1["queueService.getEntry(ordersId)<br/>+ isOrderApproved(PrimaryStatus)"]
     U1 --> U2{Queue entry status?}
     U2 -->|pending| U3[Skip direct send —<br/>drain will use fresh DB data]
-    U2 -->|failed| U4["Re-queue via addEntry()<br/>reset to pending, retryCount 0"]
-    U2 -->|sent or no entry| U5[processEnturChange:<br/>validate, then send directly]
+    U2 -->|"no entry / failed / skipped"| U4{PrimaryStatus = 2?}
+    U4 -->|yes| U4a["addEntry() — queued as 'pending'<br/>for the next scheduled drain"]
+    U4 -->|no| U4b["Ignore — never reached Entur,<br/>so nothing to revoke"]
+    U2 -->|sent| U5[processEnturChange:<br/>validate, then send directly]
     U5 --> U6{validateSkoleskyssRequest}
     U6 -->|invalid| U7["Throw EnturValidationError<br/>critical log + Teams: 'Entur Request<br/>Validation Failed (Not Sent)'"]
     U6 -->|valid| U8["createSkoleskyss with retry —<br/>on exhaustion: critical log + Teams:<br/>'Critical Entur Sync Failure'"]
@@ -207,14 +213,23 @@ flowchart TD
     B -->|removed| R1[Audit log only —<br/>cancel endpoint not implemented]
 ```
 
-An `updated` change only reaches Entur directly once the queue confirms it's safe to: if the
-order's queue entry (added when it was first seen as `new`) is still `pending`, it hasn't actually
-been created in Entur yet, so a direct send here would race — or duplicate — the scheduled drain's
-own send, and the update is skipped in favor of letting the drain pick up fresh DB data. If the
-entry is `failed`, it's re-queued instead of sent directly, so it gets a full retry cycle on the
-next drain. Only when the entry is `sent` (or, as an edge case, no entry exists at all — e.g. the
-queue file was reset independently of the monitor) does the direct send proceed. This logic lives
-in `QueueService.getEntry()` (`src/services/queue.service.ts`) and `decideUpdateDispatchAction`
+**Only approved orders take a queue slot.** An order is typically created unapproved and decided
+(approved or rejected) seconds later, so queueing it on creation would fill the queue — and the
+per-run `SYNC_QUEUE_LIMIT` — with orders that may never be approved, each burning three drain
+attempts before being retired. The monitor therefore skips unapproved new records, and it is the
+*approving* update event that enqueues the order. The predicate is `isOrderApproved`
+(`src/utils/order-status.utils.ts`), the same `PrimaryStatus = 2` rule `StudentService` applies.
+
+An `updated` change only reaches Entur directly once the queue confirms it's safe to. If the
+order's queue entry is still `pending`, it hasn't actually been created in Entur yet, so a direct
+send here would race — or duplicate — the scheduled drain's own send, and the update is skipped in
+favor of letting the drain pick up fresh DB data. If the order has never been sent (no entry, or a
+terminal `failed`/`skipped` entry), an approval re-queues it and a non-approval is ignored outright
+— nothing reached Entur, so there is nothing to revoke and nothing worth retrying. Only when the
+entry is `sent` does the direct send proceed, and it proceeds **regardless of approval**: a `sent`
+order that loses approval is sent again with `endDate` overridden to today, which is the only
+revoke mechanism available. This logic lives in `QueueService.getEntry()`
+(`src/services/queue.service.ts`) and `decideUpdateDispatchAction`
 (`src/utils/queue-dispatch-decision.utils.ts`).
 
 ### Queue file
@@ -227,28 +242,38 @@ Each entry tracks: `studentId`, `ordersId`, `startDate`, `status`, `retryCount`,
 ```
 pending → sent        (scheduler processed successfully)
 pending → pending     (scheduler failed, retryCount < maxRetries — retried next run)
-pending → failed      (scheduler failed, retryCount >= maxRetries — permanently skipped)
-failed  → pending     (monitor re-queues via addEntry if the student reappears in DB)
+pending → failed      (scheduler failed, retryCount >= maxRetries — permanently failed + Teams alert)
+pending → skipped     (order no longer active in DB — retired on the FIRST attempt, no retry, no alert)
+failed  → pending     (monitor re-queues via addEntry if the order becomes approved again)
+skipped → pending     (same — a re-approved order comes back into play)
 ```
+
+`failed` and `skipped` are both terminal, but they mean different things: `failed` is "we tried to
+send this and it went wrong", `skipped` is "this order is no longer eligible, so sending it is not
+something we should attempt". Retries cannot make a rejected order active again, so retrying would
+only occupy a queue slot for three scheduled runs and raise a permanent-failure alert for what is a
+routine rejection. The one exception that still alerts is `student_not_found` — also retired
+immediately, since retries won't bring the student back, but unexpected enough to be worth knowing.
 
 ### Downtime recovery
 
 `CustomQueryMonitor` establishes a silent baseline on first poll — records present in the DB at startup are not emitted as `NEW_RECORDS`. This means students added while the monitor was down would normally be missed.
 
-The monitor handles this with a **startup reconciliation**: before `startMonitoring()` begins, it runs the same SQL query once via `getCurrentResults()` and calls `addEntry()` for every DB record not already in the queue as `pending` or `sent`. The reconciliation log shows how many entries were added vs. already present.
+The monitor handles this with a **startup reconciliation**: before `startMonitoring()` begins, it runs the same SQL query once via `getCurrentResults()` and calls `addEntry()` for every approved DB record not already in the queue as `pending` or `sent`. Unapproved records are skipped, exactly as on the live path. The reconciliation log shows how many entries were added, how many were skipped as not approved, and how many records were checked.
 
 ### What goes through the queue vs. direct
 
 | Change type | Handling |
 |---|---|
-| New student order | Added to queue → sent by scheduler in next batch |
-| Updated student order | Direct Entur call (immediate) — unless the order's queue entry is still `pending`/`failed` (see the dispatch decision diagram above) |
+| New student order, approved (`PrimaryStatus = 2`) | Added to queue → sent by scheduler in next batch |
+| New student order, not yet approved | Not queued — audit logged only; the approving update event queues it |
+| Updated student order | Direct Entur call (immediate) only when the queue entry is `sent`; otherwise queued or ignored (see the dispatch decision diagram above) |
 | Removed student order | Audit log only — cancel endpoint not yet implemented, no Entur call is made |
 
 ### Entry dedup rules (`addEntry`)
 
 - `pending` or `sent` → skip (no duplicate)
-- `failed` → reset to `pending`, clear error, re-queue
+- `failed` or `skipped` → reset to `pending`, clear error, re-queue
 - Not found → add as new `pending` entry
 
 ---

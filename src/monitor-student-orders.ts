@@ -3,7 +3,7 @@ import path from 'path';
 import { appendFile, mkdir } from 'fs/promises';
 import { DatabaseService } from './services/database.service';
 import { CustomQueryMonitor } from './services/custom-query-monitor.service';
-import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, formatSchoolYearRange, getSchoolYearRange, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction } from './utils';
+import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, formatSchoolYearRange, getSchoolYearRange, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction, isOrderApproved } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
@@ -365,12 +365,31 @@ async function monitorActiveStudentOrders() {
         );
       };
 
-      // New records are added to the queue for rate-limited batch processing by the scheduler.
+      // New records are added to the queue for rate-limited batch processing by the scheduler —
+      // but only once approved. An order is typically created unapproved and decided seconds later,
+      // so queueing it on creation would fill queue slots with orders that may never be approved.
+      // The approving update event is what enqueues it (see decideUpdateDispatchAction).
       const { deduped: newRecordsDeduped, duplicates: newRecordsDuplicates } = dedupeByOrderId(newFilter.filtered);
       if (newRecordsDuplicates > 0) {
         appLogger.warn('Removed {DuplicateCount} duplicate OrdersId record(s) from new-records batch before queueing', newRecordsDuplicates);
       }
+      let newRecordsQueued = 0;
+      let newRecordsNotApproved = 0;
       for (const record of newRecordsDeduped) {
+        if (!isOrderApproved(record.PrimaryStatus)) {
+          newRecordsNotApproved++;
+          await writeJsonLine(AUDIT_LOG_FILE, {
+            timestamp: new Date().toISOString(),
+            level: 'debug',
+            event: 'new_order_not_approved',
+            changeType: 'new',
+            studentId: record.StudentId,
+            orderId: record.OrdersId,
+            primaryStatus: record.PrimaryStatus ?? null,
+          });
+          continue;
+        }
+
         await writeJsonLine(AUDIT_LOG_FILE, {
           timestamp: new Date().toISOString(),
           level: 'info',
@@ -392,18 +411,43 @@ async function monitorActiveStudentOrders() {
           studentId: String(record.StudentId),
           startDate: String(record.StartDate),
         });
-        if (wasAdded) summary.newOrders++;
+        if (wasAdded) {
+          newRecordsQueued++;
+          summary.newOrders++;
+        }
       }
       if (newRecordsDeduped.length > 0) {
-        appLogger.info('{Count} new student(s) added to queue for scheduled processing', newRecordsDeduped.length);
+        appLogger.info(
+          '{Total} new student order(s): {Queued} added to queue for scheduled processing, {NotApproved} not approved yet (not queued)',
+          newRecordsDeduped.length,
+          newRecordsQueued,
+          newRecordsNotApproved
+        );
       }
 
-      // Updates go directly to Entur (immediate, not rate-limited), unless the order's
-      // queue entry shows it hasn't actually been sent yet — in that case the scheduled
-      // drain will pick up fresh DB data, so a direct send here would race/duplicate it.
+      // Updates to an order already sent to Entur go directly (immediate, not rate-limited) —
+      // including status changes away from approved, which revoke by setting endDate to today.
+      // An order that hasn't reached Entur yet is routed through the queue instead: either it is
+      // already pending (the scheduled drain will pick up fresh DB data, so a direct send here
+      // would race/duplicate it) or approval has just made it eligible and it is enqueued now.
       for (const record of updatedFilter.filtered) {
         const ordersId = String(record.OrdersId);
-        const decision = decideUpdateDispatchAction(queueService.getEntry(ordersId));
+        const decision = decideUpdateDispatchAction(
+          queueService.getEntry(ordersId),
+          isOrderApproved(record.PrimaryStatus)
+        );
+
+        if (decision.action === 'ignore') {
+          await writeJsonLine(AUDIT_LOG_FILE, {
+            timestamp: new Date().toISOString(),
+            level: 'debug',
+            event: 'updated_ignored_not_approved',
+            orderId: ordersId,
+            studentId: record.StudentId,
+            primaryStatus: record.PrimaryStatus ?? null
+          });
+          continue;
+        }
 
         if (decision.action === 'skip') {
           appLogger.info('Order {OrderId} update skipped: queue entry already pending; scheduled drain will use fresh DB data.', ordersId);
@@ -417,28 +461,23 @@ async function monitorActiveStudentOrders() {
           continue;
         }
 
-        if (decision.action === 'requeue') {
-          queueService.addEntry({ ordersId, studentId: String(record.StudentId), startDate: String(record.StartDate) });
-          appLogger.warn('Order {OrderId} update re-queued after prior failed send; will retry on next scheduled drain.', ordersId);
+        if (decision.action === 'enqueue') {
+          const wasAdded = queueService.addEntry({ ordersId, studentId: String(record.StudentId), startDate: String(record.StartDate) });
+          if (wasAdded) summary.newOrders++;
+          appLogger.info(
+            'Order {OrderId} added to queue ({Reason}); will be sent on the next scheduled drain.',
+            ordersId,
+            decision.reason
+          );
           await writeJsonLine(AUDIT_LOG_FILE, {
             timestamp: new Date().toISOString(),
             level: 'info',
-            event: 'updated_requeued_after_failed',
+            event: 'updated_enqueued',
+            reason: decision.reason,
             orderId: ordersId,
             studentId: record.StudentId
           });
           continue;
-        }
-
-        if (decision.reason === 'no_queue_entry') {
-          appLogger.warn('Order {OrderId} update has no queue entry (unusual state) — sending directly to Entur.', ordersId);
-          await writeJsonLine(AUDIT_LOG_FILE, {
-            timestamp: new Date().toISOString(),
-            level: 'warn',
-            event: 'updated_sent_no_queue_entry',
-            orderId: ordersId,
-            studentId: record.StudentId
-          });
         }
 
         enqueue('updated', record);
@@ -517,7 +556,13 @@ async function monitorActiveStudentOrders() {
         appLogger.warn('Removed {DuplicateCount} duplicate OrdersId record(s) from startup reconciliation batch', currentRecordsDuplicates);
       }
       let reconciled = 0;
+      let notApproved = 0;
       for (const record of currentRecordsDeduped) {
+        // Same rule as the live path: only approved orders take a queue slot.
+        if (!isOrderApproved(record.PrimaryStatus)) {
+          notApproved++;
+          continue;
+        }
         const wasAdded = queueService.addEntry({
           ordersId: String(record.OrdersId),
           studentId: String(record.StudentId),
@@ -526,8 +571,9 @@ async function monitorActiveStudentOrders() {
         if (wasAdded) reconciled++;
       }
       appLogger.info(
-        'Queue reconciliation on startup: {Reconciled} new entries added ({Total} DB records checked)',
+        'Queue reconciliation on startup: {Reconciled} new entries added, {NotApproved} skipped as not approved ({Total} DB records checked)',
         reconciled,
+        notApproved,
         currentRecordsDeduped.length
       );
     } catch (error) {

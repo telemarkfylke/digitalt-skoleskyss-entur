@@ -1,7 +1,7 @@
 import { DatabaseService } from './database.service';
 import { StudentWithDetails } from '../types/user.types';
 import { appLogger } from './logger.service';
-import { filterOverriddenOrders, dedupeByOrderId, SchoolYearRange, formatSchoolYearRange } from '../utils';
+import { filterOverriddenOrders, dedupeByOrderId, SchoolYearRange, formatSchoolYearRange, isOrderApproved } from '../utils';
 
 
 export class StudentService {
@@ -27,7 +27,7 @@ export class StudentService {
    * Filter students to include only active ones (PrimaryStatus = 2) and exclude those with overridden orders.
    */
   private filterStudentData(students: any[], methodName: string): StudentWithDetails[] {
-    const activeStudents = students.filter((student: any) => Number(student.PrimaryStatus) === 2);
+    const activeStudents = students.filter((student: any) => isOrderApproved(student.PrimaryStatus));
     const studentsWithoutOverriddenOrders = filterOverriddenOrders(activeStudents).filtered;
     const { deduped: dedupedStudents, duplicates } = dedupeByOrderId(studentsWithoutOverriddenOrders);
 

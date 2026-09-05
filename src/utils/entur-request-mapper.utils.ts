@@ -2,6 +2,7 @@ import { EnturApiService, PostSkoleskyssRequest } from '../services/entur-skoles
 import { appLogger } from '../services/logger.service';
 import { formatPhoneNumberForEntur } from './entur-phonenumer.utils';
 import { getFareContractConfig } from '../config/fare-contract-config';
+import { isOrderApproved } from './order-status.utils';
 
 export interface EnturMappableStudentRecord {
   OrdersId: string | number;
@@ -43,11 +44,13 @@ export const mapStudentRecordToEnturRequest = (
 ): PostSkoleskyssRequest => {
   const primaryStatusValue = record.PrimaryStatus;
   const primaryStatusNumber = Number(primaryStatusValue);
+  // Only override when the status is present and not approved — an absent PrimaryStatus
+  // must leave the record's own endDate untouched.
   const shouldOverrideEndDate =
     options.overrideEndDateWhenPrimaryStatusNot2 === true &&
     primaryStatusValue !== undefined &&
     primaryStatusValue !== null &&
-    primaryStatusNumber !== 2;
+    !isOrderApproved(primaryStatusValue);
 
   const todayIsoDate = new Date().toISOString().split('T')[0];
   const effectiveEndDate = shouldOverrideEndDate ? todayIsoDate : toIsoDate(record.EndDate);

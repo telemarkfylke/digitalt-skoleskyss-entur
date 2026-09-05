@@ -4,7 +4,10 @@ import { StudentWithDetails } from '../types/user.types';
 import { appLogger } from './logger.service';
 import { dedupeByOrderId } from '../utils';
 
-export type QueueEntryStatus = 'pending' | 'sent' | 'failed';
+// 'skipped' is terminal like 'failed', but means the order is no longer eligible for Entur
+// (rejected / superseded / student gone) rather than that a send attempt went wrong. It is
+// set on the first drain attempt, so a rejected order never burns retries or raises an alert.
+export type QueueEntryStatus = 'pending' | 'sent' | 'failed' | 'skipped';
 
 export interface QueueEntry {
   studentId: string;
@@ -28,6 +31,7 @@ export interface QueueStats {
   pending: number;
   sent: number;
   failed: number;
+  skipped: number;
   total: number;
 }
 
@@ -112,9 +116,10 @@ export class QueueService {
   }
 
   // Collapses entries that share an ordersId, keeping the most-advanced status
-  // (sent > pending > failed) so an already-sent order is never re-queued as pending.
+  // (sent > pending > failed > skipped) so an already-sent order is never re-queued as pending.
+  // 'failed' outranks 'skipped' so a duplicate carrying a real error message survives.
   private dedupeEntries(): number {
-    const statusPriority: Record<QueueEntryStatus, number> = { sent: 0, pending: 1, failed: 2 };
+    const statusPriority: Record<QueueEntryStatus, number> = { sent: 0, pending: 1, failed: 2, skipped: 3 };
     const byOrderId = new Map<string, QueueEntry>();
     for (const entry of this.queue.entries) {
       const existing = byOrderId.get(entry.ordersId);
@@ -184,9 +189,30 @@ export class QueueService {
     return entry.status === 'failed';
   }
 
+  // Retires an entry without burning a retry: the order is no longer eligible for Entur
+  // (rejected, superseded, or the student is gone), so retrying it cannot help.
+  // Reloads from disk first so concurrent writes (monitor + scheduler) don't overwrite each other.
+  markSkipped(ordersId: string, reason: string): void {
+    this.loadQueue();
+
+    const entry = this.queue.entries.find((e) => e.ordersId === ordersId);
+    if (!entry) {
+      appLogger.warn('markSkipped: ordersId {OrdersId} not found in queue', ordersId);
+      return;
+    }
+    entry.status = 'skipped';
+    entry.errorMessage = reason;
+    entry.processedAt = new Date().toISOString();
+    this.queue.lastRunAt = entry.processedAt;
+    appLogger.info('Queue entry {OrdersId} retired as skipped: {Reason}', ordersId, reason);
+    this.saveQueue();
+  }
+
   // Adds a single entry to the existing queue without rebuilding.
   // Reloads from disk first so concurrent writes (monitor + scheduler) don't overwrite each other.
   // Returns true if the entry was added or re-queued, false if already pending/sent.
+  // Both terminal statuses ('failed' and 'skipped') are re-queued — that is how a re-approved
+  // order comes back into play after being retired.
   addEntry(entry: { ordersId: string; studentId: string; startDate: string }): boolean {
     this.loadQueue();
 
@@ -194,7 +220,7 @@ export class QueueService {
 
     if (existing) {
       if (existing.status === 'pending' || existing.status === 'sent') return false;
-      // 'failed' — re-queue for another attempt
+      // 'failed' or 'skipped' — re-queue for another attempt
       existing.status = 'pending';
       existing.retryCount = 0;
       delete existing.errorMessage;
@@ -232,7 +258,7 @@ export class QueueService {
   }
 
   getStats(): QueueStats {
-    const stats: QueueStats = { pending: 0, sent: 0, failed: 0, total: this.queue.entries.length };
+    const stats: QueueStats = { pending: 0, sent: 0, failed: 0, skipped: 0, total: this.queue.entries.length };
     for (const e of this.queue.entries) stats[e.status]++;
     return stats;
   }

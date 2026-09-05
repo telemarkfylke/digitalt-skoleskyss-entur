@@ -161,7 +161,7 @@ async function syncStudentsToEntur(config?: SyncConfig) {
 
         const stats = queueService.getStats();
         appLogger.info(
-          `Queue status: ${stats.total} total, ${stats.pending} pending, ${stats.sent} sent, ${stats.failed} permanently failed`
+          `Queue status: ${stats.total} total, ${stats.pending} pending, ${stats.sent} sent, ${stats.failed} permanently failed, ${stats.skipped} skipped (no longer active)`
         );
         appLogger.info(`Queue limit: ${queueLimit === 0 ? 'all pending' : queueLimit}`);
 
@@ -169,7 +169,7 @@ async function syncStudentsToEntur(config?: SyncConfig) {
 
         const finalStats = queueService.getStats();
         appLogger.info(
-          `Queue after run: ${finalStats.pending} pending, ${finalStats.sent} sent, ${finalStats.failed} permanently failed`
+          `Queue after run: ${finalStats.pending} pending, ${finalStats.sent} sent, ${finalStats.failed} permanently failed, ${finalStats.skipped} skipped (no longer active)`
         );
         break;
       }

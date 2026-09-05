@@ -374,14 +374,30 @@ export class SyncManager {
           const selection = selectQueuedOrder(students, entry.ordersId);
 
           if (!selection.found) {
+            // Neither case is retryable — retries cannot make a rejected order active again, nor
+            // bring back a missing student — so the entry is retired on this first attempt rather
+            // than occupying a queue slot for maxRetries scheduled runs. A rejected order is
+            // routine and stays quiet; a vanished student is unexpected and still alerts.
             const msg = selection.reason === 'student_not_found'
               ? `Student ${entry.studentId} not found in DB for current school year`
               : `Order ${entry.ordersId} is no longer active for student ${entry.studentId} (superseded, inactive, or outside the school year)`;
-            result.failedCount++;
-            result.errors.push(`[${entry.ordersId}] ${msg}`);
+
+            result.skippedCount++;
+            if (selection.reason === 'student_not_found') {
+              result.errors.push(`[${entry.ordersId}] ${msg}`);
+              appLogger.warn('Queue entry {OrdersId} retired: {Message}', entry.ordersId, msg);
+            } else {
+              appLogger.info('Queue entry {OrdersId} retired: {Message}', entry.ordersId, msg);
+            }
+
             if (!this.options.dryRun) {
-              const becamePermanentlyFailed = queueService.markFailed(entry.ordersId, msg);
-              await alertIfPermanentlyFailed(entry.ordersId, entry.studentId, becamePermanentlyFailed, msg);
+              queueService.markSkipped(entry.ordersId, msg);
+              if (selection.reason === 'student_not_found') {
+                await sendTeamsNotification(
+                  'Queue entry retired — student not found',
+                  `Student ID: ${entry.studentId}\nOrders ID: ${entry.ordersId}\nError: ${msg}`
+                );
+              }
             }
             continue;
           }
@@ -416,10 +432,11 @@ export class SyncManager {
 
     const stats = queueService.getStats();
     appLogger.info(
-      'Queue sync done. Pending: {Pending}, Sent: {Sent}, Failed: {Failed}',
+      'Queue sync done. Pending: {Pending}, Sent: {Sent}, Failed: {Failed}, Skipped: {Skipped}',
       stats.pending,
       stats.sent,
-      stats.failed
+      stats.failed,
+      stats.skipped
     );
     return result;
   }

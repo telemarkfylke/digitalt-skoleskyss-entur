@@ -263,6 +263,55 @@ describe('QueueService.markFailed', () => {
   });
 });
 
+describe('QueueService.markSkipped', () => {
+  test('retires the entry on the first call without burning a retry', () => {
+    const service = new QueueService(queuePath(), 3);
+    service.buildQueue([makeStudent({ OrdersId: 1 })]);
+    service.markSkipped('1', 'order no longer active');
+
+    const entry = service.getEntry('1');
+    assert.equal(entry?.status, 'skipped');
+    assert.equal(entry?.retryCount, 0);
+    assert.equal(entry?.errorMessage, 'order no longer active');
+    assert.ok(entry?.processedAt);
+  });
+
+  test('excludes the retired entry from the next batch', () => {
+    const service = new QueueService(queuePath());
+    service.buildQueue([makeStudent({ OrdersId: 1 }), makeStudent({ OrdersId: 2 })]);
+    service.markSkipped('1', 'rejected');
+    const batch = service.getNextBatch(0);
+    assert.equal(batch.length, 1);
+    assert.equal(batch[0].ordersId, '2');
+    assert.equal(service.hasPendingEntries(), true);
+  });
+
+  test('does not throw for unknown ordersId', () => {
+    const service = new QueueService(queuePath());
+    service.buildQueue([makeStudent({ OrdersId: 1 })]);
+    assert.doesNotThrow(() => service.markSkipped('999', 'rejected'));
+  });
+
+  test('does not clobber an entry added concurrently by another QueueService instance', () => {
+    const p = queuePath();
+    const drain = new QueueService(p);
+    drain.buildQueue([makeStudent({ OrdersId: 1 })]);
+
+    const monitor = new QueueService(p);
+    monitor.loadQueue();
+    monitor.addEntry({ ordersId: '999', studentId: '42', startDate: '2025-08-15' });
+
+    drain.markSkipped('1', 'rejected');
+
+    const reader = new QueueService(p);
+    reader.loadQueue();
+    const stats = reader.getStats();
+    assert.equal(stats.total, 2);
+    assert.equal(stats.skipped, 1);
+    assert.equal(stats.pending, 1);
+  });
+});
+
 describe('QueueService.hasPendingEntries', () => {
   test('returns true when queue has pending entries', () => {
     const service = new QueueService(queuePath());
@@ -336,11 +385,13 @@ describe('QueueService.getStats', () => {
     service.markSent('1');
     service.markFailed('2', 'err');
     service.markFailed('2', 'err'); // retryCount=2 >= maxRetries=2 → failed
+    service.markSkipped('3', 'order no longer active');
     const stats = service.getStats();
     assert.equal(stats.total, 4);
     assert.equal(stats.sent, 1);
     assert.equal(stats.failed, 1);
-    assert.equal(stats.pending, 2);
+    assert.equal(stats.skipped, 1);
+    assert.equal(stats.pending, 1);
   });
 });
 
@@ -386,6 +437,23 @@ describe('QueueService.addEntry', () => {
     const stats = service.getStats();
     assert.equal(stats.pending, 1);
     assert.equal(stats.failed, 0);
+    const entry = service.getNextBatch(1)[0];
+    assert.equal(entry.retryCount, 0);
+    assert.equal(entry.errorMessage, undefined);
+  });
+
+  // This is how a re-approved order comes back into play after being retired.
+  test('returns true and resets to pending when ordersId exists as skipped', () => {
+    const p = queuePath();
+    const service = new QueueService(p);
+    service.buildQueue([makeStudent({ OrdersId: 1 })]);
+    service.markSkipped('1', 'order no longer active');
+
+    const added = service.addEntry({ ordersId: '1', studentId: '42', startDate: '2025-08-15' });
+    assert.equal(added, true);
+    const stats = service.getStats();
+    assert.equal(stats.pending, 1);
+    assert.equal(stats.skipped, 0);
     const entry = service.getNextBatch(1)[0];
     assert.equal(entry.retryCount, 0);
     assert.equal(entry.errorMessage, undefined);

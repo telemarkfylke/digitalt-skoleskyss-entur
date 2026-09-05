@@ -101,8 +101,10 @@ export class EnturAuthClient {
       } as Record<string, string>
     };
 
+    // DELETE carries a body too: Entur's DELETE /skoleskyss identifies the travel right by
+    // studentId + applicationId in the request body, not by a path parameter.
     let requestBody: string | undefined;
-    if (body && (method === 'POST' || method === 'PUT')) {
+    if (body && method !== 'GET') {
       requestBody = typeof body === 'string' ? body : JSON.stringify(body);
       requestOptions.headers['Content-Length'] = Buffer.byteLength(requestBody).toString();
     }
@@ -110,7 +112,8 @@ export class EnturAuthClient {
     try {
       appLogger.info('Making Entur API request: {Method} {Url}', method, url);
       const response = await this.makeHttpRequest(url, requestOptions, requestBody);
-      return JSON.parse(response);
+      // A 204/empty body is a success, not a parse failure.
+      return response.trim() ? JSON.parse(response) : null;
     } catch (error: any) {
       appLogger.error('Entur API request failed: {Method} {Endpoint} - {ErrorMessage}', method, endpoint, error.message);
       throw error;

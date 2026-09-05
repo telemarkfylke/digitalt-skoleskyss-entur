@@ -34,14 +34,16 @@ Implemented methods:
 - `createBatchSkoleskyss(requests)`
 - `createSkoleskyssRequest(data)`
 - `validateSkoleskyssRequest(request)`
+- `deleteSkoleskyss(request)` — see [Deleting a travel right](#deleting-a-travel-right)
+- `validateDeleteSkoleskyssRequest(request)`
 - `testConnection()`
 - `getTokenInfo()`
 - `refreshToken()`
 
 Not implemented in current code:
 
-- `updateSkoleskyss(...)`
-- `cancelSkoleskyss(...)`
+- `updateSkoleskyss(...)` — not needed: `POST /skoleskyss` is *"opprett eller oppdater"*, and Entur
+  deduplicates on `studentId` (see [How Entur handles duplicate posts](#how-entur-handles-duplicate-posts))
 
 ## Request Shape
 
@@ -84,6 +86,60 @@ interface PostSkoleskyssRequest {
 ```
 
 `validity.calendar.id` and `validity.travelWindow` are populated automatically from [fare contract config](#fare-contract-config) and omitted from the payload when not set.
+
+## Deleting a travel right
+
+`DELETE /skoleskyss` (`removeSkoleskyss`) — *"Fjerner mottakeren fra skyssrettigheten."*
+
+The travel right is identified by the **same `studentId` + `applicationId` pair used to create it,
+sent in the request body**. There is no path parameter. An earlier `cancelSkoleskyss(externalRef)`
+stub in this repo assumed a `/skoleskyss/{externalRef}` form that does not exist — `externalRef`
+appears only in the *create response*, where it is Entur's echo of the ids we supplied, not a
+separate addressable handle.
+
+```typescript
+interface DeleteSkoleskyssRequest {
+  organisationId?: number;         // optional — Entur reads it from the token payload
+  studentId: string | number;      // required
+  applicationId: string | number;  // required
+}
+
+interface DeleteSkoleskyssResponse {
+  customerAccountId: string;
+  fareContractId?: string;
+  fareContractIds?: string[];      // deprecated; holds 0 or 1 element
+}
+```
+
+Because the body travels on a DELETE, `EnturAuthClient.apiRequest` serializes a body for every
+method except `GET`.
+
+**Errors:** `400` (validation issues / invalid calendar or zone), `401`, `403`, `500`, and `412`
+when `organisationId` is missing from the token payload. The API defines no `404`.
+
+### Observed behaviour (verified against staging, 5 Sep 2026)
+
+A create → delete → delete-again round trip against `api.staging.entur.io`:
+
+| Call | Result |
+|---|---|
+| `createSkoleskyss` | `200` — `{ recipient: { externalRef, customerAccountId }, fareContract: { externalRef, fareContractId, status: 'created' }, transferDetails: { pickupCode, expiresAt } }` |
+| `deleteSkoleskyss`, right exists | `200` — `fareContractId` set, `fareContractIds: ["TEL:FareContract:…"]` |
+| `deleteSkoleskyss`, **already deleted** | `200` — `fareContractIds: []` and **no `fareContractId`** |
+| `deleteSkoleskyss`, **student unknown to Entur** | `500` — `{"error":"Internal"}` |
+
+Two consequences for anyone wiring this up:
+
+- **Delete is idempotent, and "already gone" is detectable** — not by status code, but by an empty
+  `fareContractIds` / absent `fareContractId` in a `200` response. This matters because
+  `makeHttpRequest` surfaces only a message string, never a status code, so the response body is
+  the only signal available to a caller.
+- **An unknown student is a `500`, not a `404`.** A delete for a student who has no Entur customer
+  account is indistinguishable from a genuine server fault, so it must not be retried blindly.
+
+**Nothing calls this yet.** It is deliberately unwired: see
+[the dispatch decision](#dispatch-decision-new--updated--removed) for why removals stay audit-log
+only and why revoke is still `endDate = today`.
 
 ## Fare Contract Config
 
@@ -210,7 +266,7 @@ flowchart TD
     U6 -->|invalid| U7["Throw EnturValidationError<br/>critical log + Teams: 'Entur Request<br/>Validation Failed (Not Sent)'"]
     U6 -->|valid| U8["createSkoleskyss with retry —<br/>on exhaustion: critical log + Teams:<br/>'Critical Entur Sync Failure'"]
 
-    B -->|removed| R1[Audit log only —<br/>cancel endpoint not implemented]
+    B -->|removed| R1[Audit log only —<br/>deleteSkoleskyss exists but is<br/>deliberately not wired up here]
 ```
 
 **Only approved orders take a queue slot.** An order is typically created unapproved and decided
@@ -227,8 +283,14 @@ favor of letting the drain pick up fresh DB data. If the order has never been se
 terminal `failed`/`skipped` entry), an approval re-queues it and a non-approval is ignored outright
 — nothing reached Entur, so there is nothing to revoke and nothing worth retrying. Only when the
 entry is `sent` does the direct send proceed, and it proceeds **regardless of approval**: a `sent`
-order that loses approval is sent again with `endDate` overridden to today, which is the only
-revoke mechanism available. This logic lives in `QueueService.getEntry()`
+order that loses approval is sent again with `endDate` overridden to today.
+
+This `endDate = today` rewrite remains the revoke mechanism even though
+[`deleteSkoleskyss`](#deleting-a-travel-right) now exists, because the two are not equivalent:
+`endDate = today` leaves the ticket valid for the rest of the day, while a delete removes the
+recipient from the travel right immediately — a mid-day rejection would strand a pupil who
+travelled in that morning. Switching to a real delete is a deliberate follow-up decision, not a
+consequence of the endpoint existing. This logic lives in `QueueService.getEntry()`
 (`src/services/queue.service.ts`) and `decideUpdateDispatchAction`
 (`src/utils/queue-dispatch-decision.utils.ts`).
 
@@ -268,7 +330,7 @@ The monitor handles this with a **startup reconciliation**: before `startMonitor
 | New student order, approved (`PrimaryStatus = 2`) | Added to queue → sent by scheduler in next batch |
 | New student order, not yet approved | Not queued — audit logged only; the approving update event queues it |
 | Updated student order | Direct Entur call (immediate) only when the queue entry is `sent`; otherwise queued or ignored (see the dispatch decision diagram above) |
-| Removed student order | Audit log only — cancel endpoint not yet implemented, no Entur call is made |
+| Removed student order | Audit log only — `deleteSkoleskyss` is implemented but not wired here, so no Entur call is made |
 
 ### Entry dedup rules (`addEntry`)
 

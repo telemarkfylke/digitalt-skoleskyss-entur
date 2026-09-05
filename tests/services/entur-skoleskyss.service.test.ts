@@ -1,6 +1,10 @@
 import { describe, test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { EnturApiService, PostSkoleskyssRequest } from '../../src/services/entur-skoleskyss.service';
+import {
+  DeleteSkoleskyssRequest,
+  EnturApiService,
+  PostSkoleskyssRequest,
+} from '../../src/services/entur-skoleskyss.service';
 
 let service: EnturApiService;
 
@@ -230,5 +234,111 @@ describe('validateSkoleskyssRequest', () => {
     };
     const result = service.validateSkoleskyssRequest(req);
     assert.equal(result.isValid, true);
+  });
+});
+
+const validDeleteRequest = (): DeleteSkoleskyssRequest => ({
+  studentId: '42',
+  applicationId: '1001',
+});
+
+describe('validateDeleteSkoleskyssRequest', () => {
+  test('valid request passes', () => {
+    const result = service.validateDeleteSkoleskyssRequest(validDeleteRequest());
+    assert.equal(result.isValid, true);
+    assert.equal(result.errors.length, 0);
+  });
+
+  test('missing studentId fails', () => {
+    const result = service.validateDeleteSkoleskyssRequest({ ...validDeleteRequest(), studentId: '' });
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('studentId')));
+  });
+
+  test('missing applicationId fails', () => {
+    const result = service.validateDeleteSkoleskyssRequest({ ...validDeleteRequest(), applicationId: '' });
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('applicationId')));
+  });
+
+  test('numeric zero ids fail — 0 is never a real studentId or applicationId', () => {
+    const result = service.validateDeleteSkoleskyssRequest({ studentId: 0, applicationId: 0 });
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('studentId')));
+    assert.ok(result.errors.some((e) => e.includes('applicationId')));
+  });
+
+  test('numeric ids pass', () => {
+    const result = service.validateDeleteSkoleskyssRequest({ studentId: 42, applicationId: 1001 });
+    assert.equal(result.isValid, true);
+  });
+
+  test('organisationId is optional — Entur reads it from the token', () => {
+    const result = service.validateDeleteSkoleskyssRequest({ ...validDeleteRequest(), organisationId: 27 });
+    assert.equal(result.isValid, true);
+  });
+});
+
+describe('deleteSkoleskyss request shape', () => {
+  // Guards against the old cancelSkoleskyss(externalRef) stub's mistake: Entur's DELETE takes the
+  // identity pair in the request BODY, on the collection path — there is no /skoleskyss/{id} form.
+  const stubAuthClient = (svc: EnturApiService, response: any = { customerAccountId: 'ACC:1' }) => {
+    const calls: Array<{ endpoint: string; options: any }> = [];
+    (svc as any).authClient = {
+      apiRequest: async (endpoint: string, options: any) => {
+        calls.push({ endpoint, options });
+        return response;
+      },
+    };
+    return calls;
+  };
+
+  test('sends DELETE to /skoleskyss with the identity pair as the body', async () => {
+    const svc = new EnturApiService();
+    const calls = stubAuthClient(svc);
+
+    await svc.deleteSkoleskyss({ studentId: '42', applicationId: '1001' });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].endpoint, '/skoleskyss');
+    assert.equal(calls[0].options.method, 'DELETE');
+    assert.deepEqual(calls[0].options.body, { studentId: '42', applicationId: '1001' });
+  });
+
+  test('passes organisationId through when set', async () => {
+    const svc = new EnturApiService();
+    const calls = stubAuthClient(svc);
+
+    await svc.deleteSkoleskyss({ studentId: 42, applicationId: 1001, organisationId: 27 });
+
+    assert.deepEqual(calls[0].options.body, { studentId: 42, applicationId: 1001, organisationId: 27 });
+  });
+
+  test('returns the Entur response', async () => {
+    const svc = new EnturApiService();
+    stubAuthClient(svc, {
+      customerAccountId: 'ACC:1',
+      fareContractId: 'FC:1',
+      fareContractIds: ['FC:1'],
+    });
+
+    const result = await svc.deleteSkoleskyss(validDeleteRequest());
+
+    assert.equal(result.customerAccountId, 'ACC:1');
+    assert.equal(result.fareContractId, 'FC:1');
+  });
+
+  // Verified against staging: deleting an already-deleted travel right is a 200, not a 404 or an
+  // error. The only signal that nothing was removed is the empty fareContractIds / absent
+  // fareContractId — makeHttpRequest never exposes a status code, so callers have nothing else.
+  test('an already-deleted travel right comes back as a success with no fare contract', async () => {
+    const svc = new EnturApiService();
+    stubAuthClient(svc, { customerAccountId: 'ACC:1', fareContractIds: [] });
+
+    const result = await svc.deleteSkoleskyss(validDeleteRequest());
+
+    assert.equal(result.customerAccountId, 'ACC:1');
+    assert.equal(result.fareContractId, undefined);
+    assert.deepEqual(result.fareContractIds, []);
   });
 });

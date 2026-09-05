@@ -35,39 +35,44 @@ export interface PostSkoleskyssRequest {
   };
 }
 
+/**
+ * Response from POST /skoleskyss. Entur does not echo the request back — it returns the accounts
+ * and contract it created. `externalRef` is Entur's echo of the id we supplied (studentId on the
+ * recipient, applicationId on the fare contract); it is not a separate handle and cannot be used
+ * to address the record.
+ */
 export interface SkoleskyssResponse {
-  id?: string;
-  status?: 'created' | 'active' | 'cancelled' | 'expired';
-  organisationId?: number;
-  studentId: string | number;
-  applicationId: string | number;
-  validity: {
-    startDate: string;
-    endDate: string;
-    zones: Array<
-      | { fromZoneId: string; toZoneId: string; }
-      | { groupOfTariffZoneId: string; }
-    >;
+  recipient?: {
+    externalRef?: string;
+    customerAccountId?: string;
   };
-  studentDetails?: {
-    firstName?: string;
-    surname?: string;
-    school?: {
-      id: string | number;
-      name: string;
-    };
-    class?: {
-      id: string | number;
-      name: string;
-    };
-    email?: string;
-    phone?: {
-      number: string;
-      countryCode?: string;
-    };
+  fareContract?: {
+    externalRef?: string;
+    fareContractId?: string;
+    status?: 'created' | 'active' | 'cancelled' | 'expired';
   };
-  createdAt?: string;
-  updatedAt?: string;
+  transferDetails?: {
+    pickupCode?: string;
+    expiresAt?: string;
+  };
+}
+
+/**
+ * Body for DELETE /skoleskyss ("removeSkoleskyss"). Entur identifies the travel right by the same
+ * studentId + applicationId pair used to create it — there is no path parameter and no external
+ * reference id.
+ */
+export interface DeleteSkoleskyssRequest {
+  organisationId?: number; // Entur reads this from the token; only set to override
+  studentId: string | number; // elev id
+  applicationId: string | number; // søknads id
+}
+
+export interface DeleteSkoleskyssResponse {
+  customerAccountId: string;
+  fareContractId?: string;
+  /** @deprecated Use fareContractId. Kept for backwards compatibility; holds 0 or 1 element. */
+  fareContractIds?: string[];
 }
 
 export interface EnturApiResponse<T> {
@@ -120,16 +125,26 @@ export class EnturApiService {
     });
   }
 
-  // /**
-  //  * TODO: Cancel/delete an existing skoleskyss 
-  //  */
-  // public async cancelSkoleskyss(externalRef: string): Promise<void> {
-  //   console.log(`Cancelling skoleskyss for recipient: ${externalRef}`);
-    
-  //   return await this.authClient.apiRequest(`/skoleskyss/${externalRef}`, {
-  //     method: 'DELETE'
-  //   });
-  // }
+  /**
+   * Remove an existing skoleskyss travel right — "Fjerner mottakeren fra skyssrettigheten".
+   * Identified by the same studentId + applicationId pair used to create it, sent in the request
+   * body: Entur has no path-parameter form and no external reference id.
+   *
+   * Note: the API defines no 404, so deleting a travel right that does not exist is not a
+   * distinguishable case.
+   */
+  public async deleteSkoleskyss(request: DeleteSkoleskyssRequest): Promise<DeleteSkoleskyssResponse> {
+    appLogger.info(
+      'Deleting skoleskyss for applicationId {ApplicationId} and studentId {StudentId}',
+      request.applicationId,
+      request.studentId
+    );
+
+    return await this.authClient.apiRequest('/skoleskyss', {
+      method: 'DELETE',
+      body: request
+    });
+  }
 
   /**
    * Create multiple skoleskyss requests sequentially.
@@ -355,6 +370,31 @@ export class EnturApiService {
       if (startDate > endDate) {
         errors.push('validity.endDate must be after startDate');
       }
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+
+  /**
+   * Validate delete request before sending. Only the identity pair is required — organisationId is
+   * optional because Entur reads it from the token payload.
+   */
+  public validateDeleteSkoleskyssRequest(request: DeleteSkoleskyssRequest): {
+    isValid: boolean;
+    errors: string[];
+  } {
+    const errors: string[] = [];
+    appLogger.debug('Validating delete skoleskyss request: {RequestJson}', JSON.stringify(request));
+
+    if (!request.studentId) {
+      errors.push('studentId is required');
+    }
+
+    if (!request.applicationId) {
+      errors.push('applicationId is required');
     }
 
     return {

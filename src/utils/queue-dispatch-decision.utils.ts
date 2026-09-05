@@ -14,10 +14,12 @@ export type UpdateDispatchAction =
 //     should ever occupy a queue slot.
 //
 // An already-'sent' order is always sent again, approved or not: for a non-approved order the
-// mapper's overrideEndDateWhenPrimaryStatusNot2 sets endDate to today, which is the only revoke
-// mechanism available (Entur has no cancel endpoint). Conversely an order that never reached
-// Entur and is no longer approved is simply ignored — there is nothing to revoke, and nothing
-// worth retrying.
+// mapper's overrideEndDateWhenPrimaryStatusNot2 sets endDate to today, which is the revoke
+// mechanism used here. Entur does have a delete endpoint (EnturApiService.deleteSkoleskyss), but
+// it is not used for this: it removes the recipient from the travel right immediately, whereas
+// endDate=today leaves the ticket valid for the rest of the day, so a mid-day rejection does not
+// strand a pupil who travelled in that morning. Conversely an order that never reached Entur and
+// is no longer approved is simply ignored — there is nothing to revoke, and nothing worth retrying.
 export const decideUpdateDispatchAction = (
   entry: QueueEntry | undefined,
   isApproved: boolean

@@ -144,8 +144,11 @@ const processEnturChange = async (
   });
 
   if (changeType === 'removed') {
-    // Cancel/delete endpoint is not implemented yet. Keep an audit trail and mark as processed.
-    appLogger.warn('Removed order {OrderId} detected. Entur cancel endpoint is not implemented; audit logged only.', record.OrdersId);
+    // EnturApiService.deleteSkoleskyss exists, but is deliberately not called here: a 'removed'
+    // event fires whenever a row drops out of the monitor's SQL result set, which includes a
+    // school-year rollover for every student at once. Auto-deleting would need a batch-size
+    // circuit breaker first. Keep an audit trail and mark as processed.
+    appLogger.warn('Removed order {OrderId} detected. Entur delete is not wired to removals; audit logged only.', record.OrdersId);
     return;
   }
 

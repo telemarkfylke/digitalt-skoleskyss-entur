@@ -249,6 +249,14 @@ export class QueueService {
     return this.queue.entries.find((e) => e.ordersId === ordersId);
   }
 
+  // Reloads from disk first, like getEntry. Used by the delete CLI to revoke every order a student
+  // has in Entur — contracts are keyed per (studentId, applicationId), so each order needs its own
+  // delete call (see docs/ENTUR-CONTRACT-MODEL-FINDINGS.md).
+  getEntriesByStudent(studentId: string): QueueEntry[] {
+    this.loadQueue();
+    return this.queue.entries.filter((e) => e.studentId === studentId);
+  }
+
   hasQueueFile(): boolean {
     return fs.existsSync(this.filePath);
   }

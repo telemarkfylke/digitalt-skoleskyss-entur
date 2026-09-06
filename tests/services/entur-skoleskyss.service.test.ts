@@ -329,8 +329,9 @@ describe('deleteSkoleskyss request shape', () => {
   });
 
   // Verified against staging: deleting an already-deleted travel right is a 200, not a 404 or an
-  // error. The only signal that nothing was removed is the empty fareContractIds / absent
-  // fareContractId — makeHttpRequest never exposes a status code, so callers have nothing else.
+  // error. Entur sends `fareContractIds: []` with no `fareContractId` — and since makeHttpRequest
+  // never exposes a status code, that absent `fareContractId` is the only signal a caller gets.
+  // Asserted on the singular field only, because Entur deprecates the array in favour of it.
   test('an already-deleted travel right comes back as a success with no fare contract', async () => {
     const svc = new EnturApiService();
     stubAuthClient(svc, { customerAccountId: 'ACC:1', fareContractIds: [] });
@@ -339,6 +340,5 @@ describe('deleteSkoleskyss request shape', () => {
 
     assert.equal(result.customerAccountId, 'ACC:1');
     assert.equal(result.fareContractId, undefined);
-    assert.deepEqual(result.fareContractIds, []);
   });
 });

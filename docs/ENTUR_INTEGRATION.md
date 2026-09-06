@@ -10,6 +10,10 @@ ENTUR_CLIENT_ID=your_client_id
 ENTUR_CLIENT_SECRET=your_client_secret
 ENTUR_TOKEN_URL=https://<token-host>/oauth/token
 ENTUR_API_URL=https://api.staging.entur.io/skoleskyss
+
+# Deletion (optional — see "Deleting a travel right")
+ENTUR_DELETE_DRY_RUN=true        # default true; set to "false" to actually delete
+ENTUR_REVOKE_GRACE_MINUTES=15    # default 15; delay before a lost-approval delete re-check
 ```
 
 The integration fails fast on startup if any of these are missing.
@@ -136,10 +140,31 @@ Two consequences for anyone wiring this up:
   the only signal available to a caller.
 - **An unknown student is a `500`, not a `404`.** A delete for a student who has no Entur customer
   account is indistinguishable from a genuine server fault, so it must not be retried blindly.
+### How deletion is wired
 
-**Nothing calls this yet.** It is deliberately unwired: see
-[the dispatch decision](#dispatch-decision-new--updated--removed) for why removals stay audit-log
-only and why revoke is still `endDate = today`.
+`revokeOrderTravelRight` (`src/services/entur-revoke.service.ts`) is the single entry point for every
+delete, so behaviour cannot drift between triggers. It decides via `decideRevokeAction`
+(`src/utils/revoke-decision.utils.ts`), calls `deleteSkoleskyss` with retry, retires the order's queue
+entry to `skipped`, and audits the outcome.
+
+| Trigger | Behaviour |
+|---|---|
+| `removed` change type | Revokes the order's contract. Processed **sequentially** and deduplicated by `OrdersId`, since a bulk change in the source system can drop a cohort in one poll. |
+| `sent` order loses approval | **Two-stage.** `endDate = today` immediately (reversible), then a delete re-check after `ENTUR_REVOKE_GRACE_MINUTES`. |
+| `npm run delete-entur` | Manual revoke for a student or a single order. Dry run unless `--dry-run false`. |
+
+Two guards are load-bearing:
+
+- **The never-sent gate.** Nothing is deleted unless the queue records the order as `sent` — this is
+  what keeps us off the `500`-on-unknown-student path. `--force` overrides it for manual cleanup after
+  a queue rebuild has wiped the send history.
+- **`PrimaryStatus` must be explicitly non-approved.** `isOrderApproved` returns `false` for
+  `undefined`/`null` too, so an absent status falls back to a plain refresh rather than a revoke.
+
+Deletes are **dry run by default**. Set `ENTUR_DELETE_DRY_RUN=false` to arm them; anything else logs
+and audits the intended delete without calling Entur. A mass delete is never blocked and raises no
+Teams alert — it is either a human running the CLI or a genuine bulk change upstream — so the audit
+log is the record of what happened.
 
 ## Fare Contract Config
 
@@ -265,8 +290,23 @@ flowchart TD
     U5 --> U6{validateSkoleskyssRequest}
     U6 -->|invalid| U7["Throw EnturValidationError<br/>critical log + Teams: 'Entur Request<br/>Validation Failed (Not Sent)'"]
     U6 -->|valid| U8["createSkoleskyss with retry —<br/>on exhaustion: critical log + Teams:<br/>'Critical Entur Sync Failure'"]
+    U8 --> U9{PrimaryStatus explicitly<br/>not 2?}
+    U9 -->|"no / unknown"| U10[Done — plain refresh]
+    U9 -->|yes| U11["endDate already forced to today.<br/>Schedule delete re-check after<br/>ENTUR_REVOKE_GRACE_MINUTES"]
+    U11 --> U12{Still not approved<br/>when the timer fires?}
+    U12 -->|"re-approved"| U13[No delete — re-query<br/>found it eligible again]
+    U12 -->|yes| R2
 
-    B -->|removed| R1[Audit log only —<br/>deleteSkoleskyss exists but is<br/>deliberately not wired up here]
+    B -->|removed| R1["Dedupe by OrdersId,<br/>then process sequentially"]
+    R1 --> R2["revokeOrderTravelRight"]
+    R2 --> R3{Queue says 'sent'?}
+    R3 -->|no| R4["Skip — audit<br/>'entur_delete_skipped_never_sent'"]
+    R3 -->|yes| R5{ENTUR_DELETE_DRY_RUN}
+    R5 -->|"true (default)"| R6[Audit intent only,<br/>no API call]
+    R5 -->|false| R7["deleteSkoleskyss with retry"]
+    R7 --> R8{fareContractIds empty?}
+    R8 -->|yes| R9["already_gone — nothing<br/>was there to remove"]
+    R8 -->|no| R10["Deleted. markSkipped,<br/>audit 'entur_deleted'"]
 ```
 
 **Only approved orders take a queue slot.** An order is typically created unapproved and decided
@@ -285,12 +325,28 @@ terminal `failed`/`skipped` entry), an approval re-queues it and a non-approval 
 entry is `sent` does the direct send proceed, and it proceeds **regardless of approval**: a `sent`
 order that loses approval is sent again with `endDate` overridden to today.
 
-This `endDate = today` rewrite remains the revoke mechanism even though
-[`deleteSkoleskyss`](#deleting-a-travel-right) now exists, because the two are not equivalent:
-`endDate = today` leaves the ticket valid for the rest of the day, while a delete removes the
-recipient from the travel right immediately — a mid-day rejection would strand a pupil who
-travelled in that morning. Switching to a real delete is a deliberate follow-up decision, not a
-consequence of the endpoint existing. This logic lives in `QueueService.getEntry()`
+That `endDate = today` rewrite is now **stage one of a two-stage revoke**, not the whole of it. It
+stops travel immediately and is reversible, which matters for two reasons: `PrimaryStatus = 2` is the
+only value documented anywhere, so "not 2" may cover benign states, and an order is typically created
+unapproved and decided seconds later — deleting on the first poll would destroy and recreate a
+pupil's contract on a transient flip. Stage two is a delete re-check scheduled
+`ENTUR_REVOKE_GRACE_MINUTES` later (`src/services/deferred-revoke.service.ts`).
+
+When that timer fires, `revokeAfterGracePeriod` re-queries the **database** via
+`StudentService.getSingleStudent` — not the queue. This distinction is the whole guard: a re-approved
+order keeps its `sent` queue entry, because `decideUpdateDispatchAction` dispatches it as a plain
+`send` and never changes queue state. Only a fresh DB read can tell a genuine rejection from a
+transient flip. `getSingleStudent` already filters to `PrimaryStatus = 2` and drops overridden
+orders, so finding the order there means it is eligible again and the delete is cancelled. A lookup
+that **throws** aborts without deleting — a failed query is not evidence that an order became
+ineligible, and treating it as such would revoke valid cards for every pending check at once.
+
+A cancelled revoke needs no repair: the re-approval is itself an `updated` change, which the monitor
+sends normally, rewriting `endDate` back to the order's real value.
+
+Pending checks live in memory only — a monitor restart drops them, leaving the order at
+`endDate = today` with no delete, which is the safe direction to fail in. This logic lives in
+`QueueService.getEntry()`
 (`src/services/queue.service.ts`) and `decideUpdateDispatchAction`
 (`src/utils/queue-dispatch-decision.utils.ts`).
 
@@ -330,7 +386,7 @@ The monitor handles this with a **startup reconciliation**: before `startMonitor
 | New student order, approved (`PrimaryStatus = 2`) | Added to queue → sent by scheduler in next batch |
 | New student order, not yet approved | Not queued — audit logged only; the approving update event queues it |
 | Updated student order | Direct Entur call (immediate) only when the queue entry is `sent`; otherwise queued or ignored (see the dispatch decision diagram above) |
-| Removed student order | Audit log only — `deleteSkoleskyss` is implemented but not wired here, so no Entur call is made |
+| Removed student order | `deleteSkoleskyss` for that order, if the queue records it as `sent`. Sequential, deduplicated by `OrdersId`, dry run unless `ENTUR_DELETE_DRY_RUN=false` |
 
 ### Entry dedup rules (`addEntry`)
 
@@ -426,6 +482,15 @@ npm run sync-entur -- -- --method single --student-ids "81722,12345,77793"
 
 # Validate all sync methods
 npm run sync-entur -- -- --validate
+
+# Revoke a student's Entur contracts (dry run by default)
+npm run delete-entur -- -- --student-id 91703
+
+# Revoke one specific order, for real
+npm run delete-entur -- -- --student-id 91703 --order-id 78411 --dry-run false
+
+# Revoke even when the queue has no record of the send (e.g. after a queue rebuild)
+npm run delete-entur -- -- --student-id 91703 --dry-run false --force
 
 # Run tests
 npm test

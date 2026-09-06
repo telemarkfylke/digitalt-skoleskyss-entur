@@ -14,8 +14,10 @@ const makeEntry = (overrides: Partial<QueueEntry> = {}): QueueEntry => ({
   ...overrides,
 });
 
-const APPROVED = true;
-const NOT_APPROVED = false;
+// The decision takes the raw PrimaryStatus, not a boolean, because it has to tell
+// "explicitly rejected" apart from "we don't know" — only the former may revoke.
+const APPROVED = 2;
+const NOT_APPROVED = 1;
 
 describe('decideUpdateDispatchAction — already sent to Entur', () => {
   test('sends directly when the queue entry was already sent and the order is still approved', () => {
@@ -23,11 +25,33 @@ describe('decideUpdateDispatchAction — already sent to Entur', () => {
     assert.deepEqual(decision, { action: 'send', reason: 'queue_entry_sent' });
   });
 
-  // Load-bearing: this is the only revoke mechanism. A sent order that loses approval must still
-  // be sent so the mapper can override endDate to today — Entur has no cancel endpoint.
-  test('still sends when the queue entry was sent but the order is no longer approved (revoke path)', () => {
+  // Load-bearing: stage one of a revoke. The send still happens so the mapper can override endDate
+  // to today, which stops travel immediately and reversibly; only the delete waits out the grace
+  // period, so a transient status flip cannot destroy and recreate the pupil's contract.
+  test('sends and schedules a revoke when a sent order loses approval', () => {
     const decision = decideUpdateDispatchAction(makeEntry({ status: 'sent' }), NOT_APPROVED);
-    assert.deepEqual(decision, { action: 'send', reason: 'queue_entry_sent' });
+    assert.deepEqual(decision, { action: 'send_then_revoke', reason: 'sent_lost_approval' });
+  });
+
+  test('treats a string status the same as a numeric one', () => {
+    assert.deepEqual(decideUpdateDispatchAction(makeEntry({ status: 'sent' }), '2'), {
+      action: 'send',
+      reason: 'queue_entry_sent',
+    });
+    assert.deepEqual(decideUpdateDispatchAction(makeEntry({ status: 'sent' }), '1'), {
+      action: 'send_then_revoke',
+      reason: 'sent_lost_approval',
+    });
+  });
+
+  // isOrderApproved returns false for undefined/null too, so without this guard a record arriving
+  // without PrimaryStatus would delete the pupil's contract on missing data. It must degrade to a
+  // plain refresh instead — which is also what the mapper does with an absent status.
+  test('does not revoke when PrimaryStatus is absent — only an explicit non-approval revokes', () => {
+    for (const absent of [undefined, null]) {
+      const decision = decideUpdateDispatchAction(makeEntry({ status: 'sent' }), absent);
+      assert.deepEqual(decision, { action: 'send', reason: 'queue_entry_sent_status_unknown' });
+    }
   });
 });
 
@@ -75,6 +99,13 @@ describe('decideUpdateDispatchAction — never sent and not approved', () => {
 
   test('ignores an unapproved order whose entry was retired as skipped', () => {
     const decision = decideUpdateDispatchAction(makeEntry({ status: 'skipped' }), NOT_APPROVED);
+    assert.deepEqual(decision, { action: 'ignore', reason: 'not_approved_never_sent' });
+  });
+
+  // An absent status is not approval, so a never-sent order is still ignored here — the
+  // status-unknown fallback only applies once something has actually reached Entur.
+  test('ignores an order with no queue entry and no PrimaryStatus', () => {
+    const decision = decideUpdateDispatchAction(undefined, undefined);
     assert.deepEqual(decision, { action: 'ignore', reason: 'not_approved_never_sent' });
   });
 });

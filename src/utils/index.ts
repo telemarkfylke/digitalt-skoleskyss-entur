@@ -9,3 +9,4 @@ export * from './queue-dispatch-decision.utils';
 export * from './queue-drain-outcome.utils';
 export * from './queued-order-selection.utils';
 export * from './order-status.utils';
+export * from './revoke-decision.utils';

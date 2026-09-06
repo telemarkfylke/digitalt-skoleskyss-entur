@@ -1,7 +1,9 @@
 import { QueueEntry } from '../services/queue.service';
+import { isOrderApproved } from './order-status.utils';
 
 export type UpdateDispatchAction =
-  | { action: 'send'; reason: 'queue_entry_sent' }
+  | { action: 'send'; reason: 'queue_entry_sent' | 'queue_entry_sent_status_unknown' }
+  | { action: 'send_then_revoke'; reason: 'sent_lost_approval' }
   | { action: 'skip'; reason: 'queue_entry_pending' }
   | { action: 'enqueue'; reason: 'approved_not_queued' | 'queue_entry_failed' | 'queue_entry_skipped' }
   | { action: 'ignore'; reason: 'not_approved_never_sent' };
@@ -13,18 +15,34 @@ export type UpdateDispatchAction =
 //   - whether the order is currently approved (PrimaryStatus 2), since only approved orders
 //     should ever occupy a queue slot.
 //
-// An already-'sent' order is always sent again, approved or not: for a non-approved order the
-// mapper's overrideEndDateWhenPrimaryStatusNot2 sets endDate to today, which is the revoke
-// mechanism used here. Entur does have a delete endpoint (EnturApiService.deleteSkoleskyss), but
-// it is not used for this: it removes the recipient from the travel right immediately, whereas
-// endDate=today leaves the ticket valid for the rest of the day, so a mid-day rejection does not
-// strand a pupil who travelled in that morning. Conversely an order that never reached Entur and
-// is no longer approved is simply ignored — there is nothing to revoke, and nothing worth retrying.
+// An already-'sent' order is always sent again. When it has *lost* approval that send still happens
+// first — the mapper's overrideEndDateWhenPrimaryStatusNot2 sets endDate to today, which revokes
+// travel immediately and reversibly — and 'send_then_revoke' additionally asks the caller to
+// schedule a delete re-check. Deleting outright on the first poll would be wrong for two reasons:
+// PrimaryStatus 2 is the only value documented anywhere, so "not 2" may include benign states, and
+// an order is typically created unapproved and decided seconds later, so a transient flip would
+// destroy and recreate the pupil's contract. The grace period lets a re-approval undo it silently.
+//
+// PrimaryStatus must be *explicitly* not approved to trigger a revoke. isOrderApproved returns false
+// for undefined/null too, so an absent status would otherwise revoke on missing data — the same trap
+// the mapper guards against (see entur-request-mapper.utils.ts). An unknown status falls back to a
+// plain refresh, which is what the mapper does with it anyway.
+//
+// Conversely an order that never reached Entur and is no longer approved is simply ignored — there
+// is nothing to revoke, and nothing worth retrying.
 export const decideUpdateDispatchAction = (
   entry: QueueEntry | undefined,
-  isApproved: boolean
+  primaryStatus: string | number | null | undefined
 ): UpdateDispatchAction => {
-  if (entry?.status === 'sent') return { action: 'send', reason: 'queue_entry_sent' };
+  const isApproved = isOrderApproved(primaryStatus);
+  const isStatusKnown = primaryStatus !== undefined && primaryStatus !== null;
+
+  if (entry?.status === 'sent') {
+    if (isApproved) return { action: 'send', reason: 'queue_entry_sent' };
+    if (!isStatusKnown) return { action: 'send', reason: 'queue_entry_sent_status_unknown' };
+    return { action: 'send_then_revoke', reason: 'sent_lost_approval' };
+  }
+
   if (entry?.status === 'pending') return { action: 'skip', reason: 'queue_entry_pending' };
 
   if (!isApproved) return { action: 'ignore', reason: 'not_approved_never_sent' };

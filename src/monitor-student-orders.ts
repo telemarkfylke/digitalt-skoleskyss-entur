@@ -8,8 +8,15 @@ import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
 import { sendTeamsNotification } from './services/teams-notifier.service';
+import { revokeOrderTravelRight, revokeAfterGracePeriod } from './services/entur-revoke.service';
+import { StudentService } from './services/student.service';
+import { DeferredRevokeScheduler, getRevokeGraceMs } from './services/deferred-revoke.service';
 
 type ChangeType = 'new' | 'updated' | 'removed';
+
+// Deletes are armed explicitly. Anything but the literal "false" leaves the monitor in dry run,
+// where a revoke is logged and audited but no DELETE reaches Entur.
+const isDeleteDryRun = (): boolean => (process.env.ENTUR_DELETE_DRY_RUN || '').toLowerCase() !== 'false';
 
 interface OrderRecord {
   OrdersId: string | number;
@@ -117,8 +124,27 @@ const mapRecordToEnturRequest = (enturService: EnturApiService, record: OrderRec
   });
 };
 
+// Revoke one order's Entur fare contract. Contracts are keyed on (studentId, applicationId), so this
+// only removes the contract this order created — the pupil's other orders keep theirs.
+const revokeOrder = async (
+  enturService: EnturApiService,
+  queueService: QueueService,
+  record: Pick<OrderRecord, 'OrdersId' | 'StudentId'>
+): Promise<void> => {
+  await revokeOrderTravelRight(
+    { enturService, queueService },
+    {
+      studentId: record.StudentId,
+      ordersId: record.OrdersId,
+      dryRun: isDeleteDryRun(),
+      audit: (payload) => writeJsonLine(AUDIT_LOG_FILE, payload)
+    }
+  );
+};
+
 const processEnturChange = async (
   enturService: EnturApiService,
+  queueService: QueueService,
   changeType: ChangeType,
   record: OrderRecord
 ): Promise<void> => {
@@ -144,11 +170,11 @@ const processEnturChange = async (
   });
 
   if (changeType === 'removed') {
-    // EnturApiService.deleteSkoleskyss exists, but is deliberately not called here: a 'removed'
-    // event fires whenever a row drops out of the monitor's SQL result set, which includes a
-    // school-year rollover for every student at once. Auto-deleting would need a batch-size
-    // circuit breaker first. Keep an audit trail and mark as processed.
-    appLogger.warn('Removed order {OrderId} detected. Entur delete is not wired to removals; audit logged only.', record.OrdersId);
+    // The order no longer matches the monitor's eligibility query, so its fare contract is revoked.
+    // Only StudentId and OrdersId are read from the record: a removed record carries the *previous*
+    // poll's snapshot (CustomQueryMonitor emits the stale row), so none of its other fields can be
+    // trusted. The queue decides whether the order ever reached Entur at all.
+    await revokeOrder(enturService, queueService, record);
     return;
   }
 
@@ -238,6 +264,8 @@ async function monitorActiveStudentOrders() {
   const dbService = new DatabaseService();
   const queryMonitor = new CustomQueryMonitor(dbService);
   const enturService = new EnturApiService();
+  // Declared out here so the shutdown handlers below can clear pending revoke checks.
+  let deferredRevoke: DeferredRevokeScheduler | undefined;
 
   try {
     appLogger.info('Starting Active Student Orders Monitoring...');
@@ -256,6 +284,27 @@ async function monitorActiveStudentOrders() {
 
     const queueService = new QueueService(process.env.SYNC_QUEUE_FILE ?? './queue/sync-queue.json');
     queueService.loadQueue();
+
+    // Holds the destructive half of a revoke back for a grace period. When the timer fires the
+    // check re-queries the DATABASE — approval is not visible in the queue, since a re-approved
+    // order keeps its 'sent' entry — so an order approved again in the meantime is not deleted.
+    const studentService = new StudentService(dbService);
+    deferredRevoke = new DeferredRevokeScheduler(undefined, async (ordersId) => {
+      await revokeAfterGracePeriod(
+        { enturService, queueService, studentService },
+        {
+          ordersId,
+          schoolYearRange,
+          dryRun: isDeleteDryRun(),
+          audit: (payload) => writeJsonLine(AUDIT_LOG_FILE, payload)
+        }
+      );
+    });
+    appLogger.info(
+      'Entur deletes are {DeleteMode}; revoke grace period is {GraceMinutes} minute(s)',
+      isDeleteDryRun() ? 'DRY RUN (nothing will be deleted)' : 'ARMED',
+      Math.round(getRevokeGraceMs() / 60000)
+    );
 
     // Set up event handlers
     queryMonitor.on('change', async (change) => {
@@ -319,11 +368,11 @@ async function monitorActiveStudentOrders() {
         appLogger.info('Excluded {ExcludedCount} overridden order(s) from processing in this change event.', excludedOverriddenCount);
       }
 
-      const enqueue = (changeType: ChangeType, record: OrderRecord) => {
-        tasks.push(
-          (async () => {
+      // Runs one change to completion, absorbing its own failure so a bad record cannot take the
+      // whole change event down. Callers decide whether to run these in parallel or in sequence.
+      const runChange = async (changeType: ChangeType, record: OrderRecord): Promise<void> => {
             try {
-              await processEnturChange(enturService, changeType, record);
+              await processEnturChange(enturService, queueService, changeType, record);
               if (changeType === 'new') summary.newOrders++;
               if (changeType === 'updated') summary.updatedOrders++;
               if (changeType === 'removed') summary.removedOrders++;
@@ -364,8 +413,10 @@ async function monitorActiveStudentOrders() {
                 ].join('\n')
               );
             }
-          })()
-        );
+      };
+
+      const enqueue = (changeType: ChangeType, record: OrderRecord) => {
+        tasks.push(runChange(changeType, record));
       };
 
       // New records are added to the queue for rate-limited batch processing by the scheduler —
@@ -437,7 +488,7 @@ async function monitorActiveStudentOrders() {
         const ordersId = String(record.OrdersId);
         const decision = decideUpdateDispatchAction(
           queueService.getEntry(ordersId),
-          isOrderApproved(record.PrimaryStatus)
+          record.PrimaryStatus
         );
 
         if (decision.action === 'ignore') {
@@ -483,11 +534,39 @@ async function monitorActiveStudentOrders() {
           continue;
         }
 
+        // 'send_then_revoke' still sends: the mapper forces endDate to today, which stops travel
+        // immediately and reversibly. Only the destructive half waits out the grace period, so a
+        // transient status flip cannot destroy and recreate the pupil's contract.
+        if (decision.action === 'send_then_revoke') {
+          const scheduled = deferredRevoke?.schedule(ordersId) === true;
+          appLogger.info(
+            'Order {OrderId} lost approval; endDate set to today and delete re-check {Scheduled}.',
+            ordersId,
+            scheduled ? 'scheduled' : 'already pending'
+          );
+          await writeJsonLine(AUDIT_LOG_FILE, {
+            timestamp: new Date().toISOString(),
+            level: 'info',
+            event: 'entur_revoke_scheduled',
+            reason: decision.reason,
+            orderId: ordersId,
+            studentId: record.StudentId,
+            primaryStatus: record.PrimaryStatus ?? null,
+            alreadyPending: !scheduled
+          });
+        }
+
         enqueue('updated', record);
       }
 
-      // Removals go directly to Entur (immediate, not rate-limited).
-      removedFilter.filtered.forEach((record) => enqueue('removed', record));
+      // Removals go directly to Entur, but sequentially: each one is a delete, and a bulk change in
+      // the source system can drop a whole cohort out of the query in a single poll. Deduplicated by
+      // OrdersId because a fare contract is per-order — two removed rows for one order are one
+      // revoke, while two orders for one pupil are genuinely two.
+      const { deduped: removedRecordsDeduped } = dedupeByOrderId(removedFilter.filtered);
+      for (const record of removedRecordsDeduped) {
+        await runChange('removed', record);
+      }
 
       await Promise.all(tasks);
       appLogger.info('Finished processing change event: {TaskCount} item(s)', tasks.length);
@@ -633,6 +712,7 @@ async function monitorActiveStudentOrders() {
   process.on('SIGINT', async () => {
     appLogger.info('Shutting down monitoring...');
     queryMonitor.stopAll();
+    deferredRevoke?.cancelAll();
     await dbService.disconnect();
     appLogger.info('Monitoring stopped');
     return exitWithCode(0);
@@ -641,6 +721,7 @@ async function monitorActiveStudentOrders() {
   process.on('SIGTERM', async () => {
     appLogger.info('Received SIGTERM...');
     queryMonitor.stopAll();
+    deferredRevoke?.cancelAll();
     await dbService.disconnect();
     return exitWithCode(0);
   });

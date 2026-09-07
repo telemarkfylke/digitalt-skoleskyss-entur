@@ -61,6 +61,46 @@ export class StudentService {
     }
   }
 
+  /**
+   * Look up which student owns each of the given order ids.
+   *
+   * Deliberately unfiltered — no school-year window, no PrimaryStatus, no IsActive, no joins, and
+   * NOT routed through filterStudentData (which keeps only PrimaryStatus = 2). The orders that most
+   * need revoking are exactly the ones that have dropped out of the eligible set, so any filter here
+   * would hide them. That is also why getSingleStudent cannot serve this.
+   *
+   * Used only by the delete CLI, to resolve an order id to the (studentId, applicationId) pair a
+   * fare contract is addressed by.
+   */
+  async getOrderOwners(ordersIds: Array<string | number>): Promise<Array<{ OrdersId: number; StudentId: number }>> {
+    const ids = [...new Set(ordersIds.map((id) => String(id).trim()).filter(Boolean))];
+    if (ids.length === 0) return [];
+
+    await this.ensureConnected();
+
+    // SQL Server caps a request at 2100 parameters; chunk well inside that rather than fail at scale.
+    const CHUNK_SIZE = 500;
+    const owners: Array<{ OrdersId: number; StudentId: number }> = [];
+
+    for (let start = 0; start < ids.length; start += CHUNK_SIZE) {
+      const chunk = ids.slice(start, start + CHUNK_SIZE);
+      const placeholders = chunk.map((_, index) => `@param${index}`).join(', ');
+      const result = await this.db.query(
+        `SELECT o.Id as OrdersId, o.StudentId FROM dbo.Orders o WHERE o.Id IN (${placeholders})`,
+        chunk
+      );
+      owners.push(...(result.recordset || []));
+    }
+
+    appLogger.info(
+      'getOrderOwners: resolved {FoundCount} of {RequestedCount} order id(s) from dbo.Orders',
+      owners.length,
+      ids.length
+    );
+
+    return owners;
+  }
+
   // Get students from videregående schools whose order overlaps the given school year
   async getVideregaaendeStudents(range: SchoolYearRange): Promise<StudentWithDetails[]> {
     try {

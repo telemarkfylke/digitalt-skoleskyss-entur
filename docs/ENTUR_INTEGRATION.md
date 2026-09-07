@@ -151,7 +151,7 @@ entry to `skipped`, and audits the outcome.
 |---|---|
 | `removed` change type | Revokes the order's contract. Processed **sequentially** and deduplicated by `OrdersId`, since a bulk change in the source system can drop a cohort in one poll. |
 | `sent` order loses approval | **Two-stage.** `endDate = today` immediately (reversible), then a delete re-check after `ENTUR_REVOKE_GRACE_MINUTES`. |
-| `npm run delete-entur` | Manual revoke for a student or a single order. Dry run unless `--dry-run false`. |
+| `npm run delete-entur` | Manual revoke, driven either by student or by a list of order ids. Dry run unless `--dry-run false`. |
 
 Two guards are load-bearing:
 
@@ -161,10 +161,32 @@ Two guards are load-bearing:
 - **`PrimaryStatus` must be explicitly non-approved.** `isOrderApproved` returns `false` for
   `undefined`/`null` too, so an absent status falls back to a plain refresh rather than a revoke.
 
-Deletes are **dry run by default**. Set `ENTUR_DELETE_DRY_RUN=false` to arm them; anything else logs
-and audits the intended delete without calling Entur. A mass delete is never blocked and raises no
-Teams alert — it is either a human running the CLI or a genuine bulk change upstream — so the audit
-log is the record of what happened.
+Deletes are **dry run by default**. Set `ENTUR_DELETE_DRY_RUN=false` to arm them in the monitor, or
+pass `--dry-run false` to the CLI (the env var does not affect the CLI). Anything else logs and
+audits the intended delete without calling Entur. A mass delete is never blocked and raises no Teams
+alert — it is either a human running the CLI or a genuine bulk change upstream — so the audit log is
+the record of what happened.
+
+### Revoking by order id
+
+`npm run delete-entur -- -- --order-ids <ids>` deletes by order id alone, resolving each order's
+owner — a contract is addressed by `(studentId, applicationId)`, so the student has to come from
+somewhere. Resolution is queue-first (`QueueService.getEntry`), then `StudentService.getOrderOwners`,
+a deliberately **unfiltered** lookup on `dbo.Orders`: the orders most in need of revoking are the
+ones that have dropped out of the eligible set, so `getSingleStudent` cannot serve this.
+
+The batch runs whole or not at all. Everything is resolved and checked before a single delete is
+issued, and any of these aborts the run with nothing deleted:
+
+- an order id that neither the queue nor the database can resolve;
+- a `--student-id` that does not match an order's real owner (it acts as an assertion, so a mistyped
+  id cannot revoke a different pupil's contract);
+- orders with no `sent` queue record while `--force` is absent — always the case for
+  database-resolved orders, and reported rather than run as a wall of skips that reads like success.
+
+**Check the `Resolved N of M order id(s)` line before arming a run.** A list pasted from a SQL client
+is easy to truncate, and that count is the cheapest way to catch it. The parser accepts commas,
+spaces, or both, precisely so a pasted list cannot be silently cut short by the shell splitting it.
 
 ## Fare Contract Config
 
@@ -483,14 +505,18 @@ npm run sync-entur -- -- --method single --student-ids "81722,12345,77793"
 # Validate all sync methods
 npm run sync-entur -- -- --validate
 
-# Revoke a student's Entur contracts (dry run by default)
+# Revoke by order id — owners are resolved automatically (dry run by default).
+# Commas and/or spaces both work, so a list pasted from a SQL client is fine.
+npm run delete-entur -- -- --order-ids 80409, 80565, 80188 --force
+
+# Same, from a file (one id per line, or comma-separated)
+npm run delete-entur -- -- --order-ids-file ./orders.txt --dry-run false --force
+
+# Revoke everything the queue has sent for a student
 npm run delete-entur -- -- --student-id 91703
 
 # Revoke one specific order, for real
-npm run delete-entur -- -- --student-id 91703 --order-id 78411 --dry-run false
-
-# Revoke even when the queue has no record of the send (e.g. after a queue rebuild)
-npm run delete-entur -- -- --student-id 91703 --dry-run false --force
+npm run delete-entur -- -- --student-id 91703 --order-id 78411 --dry-run false --force
 
 # Run tests
 npm test

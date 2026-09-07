@@ -252,7 +252,14 @@ INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
 WHERE o.ToDate >= @Start AND o.FromDate < @End
   AND s.Type = 1 AND p.Discriminator LIKE 'Student' AND p.IsActive = 1
   AND UsesMassTransit = 1
-  AND (o.UpdatedTime >= @DownSince OR p.UpdatedTime >= @DownSince);
+  AND (o.UpdatedTime >= @DownSince OR p.UpdatedTime >= @DownSince)
+  -- Pupils with a physical school travel card must not be re-sent (see "Excluded order tags")
+  AND NOT EXISTS (
+    SELECT 1 FROM dbo.OrderTags ot
+    INNER JOIN dbo.Tags t ON t.Id = ot.TagId
+    WHERE ot.OrderId = o.Id AND t.IsDeleted = 0
+      AND t.Text IN ('VGS Fysisk skolereisekort')
+  );
 ```
 
 ### 2. Re-send just those students
@@ -283,6 +290,31 @@ useful signal that they still have no valid contract.
 - Before a direct send, the request is validated (same checks as `--validate`); an invalid request (e.g. endDate before startDate) is never sent to Entur — it's logged and alerted to Teams separately from an actual send failure. See "Validation on the monitor's direct-send path" in `docs/ENTUR_INTEGRATION.md`.
 - Daily summary and critical failure notifications are sent to Teams if `TEAMS_WEBHOOK_URL` is set. The scheduled queue-drain job (`sync-entur-queue-live`) sends its own Teams alerts too — one per permanently-failed student, and one if an entire drain run fails outright. Invalid requests (e.g. a student missing a required phone number) are also alerted to Teams immediately on first validation failure, before any retries are attempted.
 - Current monitor query/filtering is defined directly in `src/monitor-student-orders.ts`.
+
+## Excluded Order Tags (physical travel card)
+
+Pupils who get a **physical** school travel card are tagged `VGS Fysisk skolereisekort` in the
+source system, and their orders must never reach Entur. Every query that decides eligibility — the
+three `StudentService` lookups and the monitor's query — accounts for the tag.
+
+- **Per order, not per pupil.** The tag lives on `dbo.OrderTags.OrderId`, so a pupil's other,
+  untagged orders keep syncing normally.
+- **An order *replaced by* a tagged order is excluded too.** Tag the replacement and neither goes to
+  Entur. This is why `StudentService` selects the tag as a flag and filters it *after*
+  `filterOverriddenOrders` instead of excluding it in the `WHERE` — see `docs/ENTUR_INTEGRATION.md`.
+- **Tagging an already-synced order revokes its Entur contract, while the monitor is running.** The
+  order drops out of the monitor's result set, firing its normal `removed` → delete path. Deletes
+  stay in dry run unless `ENTUR_DELETE_DRY_RUN=false`. An order tagged *while the monitor is down*
+  is **not** revoked on restart — the baseline is rebuilt silently, so the row was never there to
+  disappear. Same repair as any other downtime drift: `npm run delete-entur`.
+- **The tag list is `src/config/excluded-order-tags.config.ts`**, overridable without a deploy via
+  `ENTUR_EXCLUDED_ORDER_TAGS` (comma-separated). A blank value excludes nothing — the escape hatch
+  if the filter has to come off in a hurry. The monitor logs which tags are in effect at startup.
+- **`getOrderOwners` is exempt on purpose**, so the delete CLI can still resolve a tagged order's
+  ids in order to clean its contract up.
+
+See "Excluded order tags" in `docs/ENTUR_INTEGRATION.md` for the SQL, the two forms and why they
+differ, and the queue-drain detail.
 
 ## Additional Notes
 

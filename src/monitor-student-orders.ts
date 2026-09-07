@@ -3,7 +3,7 @@ import path from 'path';
 import { appendFile, mkdir } from 'fs/promises';
 import { DatabaseService } from './services/database.service';
 import { CustomQueryMonitor } from './services/custom-query-monitor.service';
-import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, formatSchoolYearRange, getSchoolYearRange, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction, isOrderApproved } from './utils';
+import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, formatSchoolYearRange, getSchoolYearRange, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction, isOrderApproved, buildExcludedOrderTagFilter } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
@@ -579,6 +579,11 @@ async function monitorActiveStudentOrders() {
     queryMonitor.on('error', (error) => {
       appLogger.error('Query monitoring error: {ErrorMessage}', error instanceof Error ? error.message : String(error));
     });
+    // @param0 and @param1 are the school year bounds, so the tag parameters start at 2.
+    // A tagged order drops out of this query, which the 'removed' path above then revokes — that is
+    // exactly what should happen when a pupil is handed a physical travel card instead.
+    const excludedTags = buildExcludedOrderTagFilter(2);
+
     const studentOrdersConfig = {
       name: `ActiveStudentOrders${currentSchoolYear.yearString}`,
       query: `
@@ -613,13 +618,14 @@ async function monitorActiveStudentOrders() {
           AND s.Type = 1
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
-          AND UsesMassTransit = 1
+          AND UsesMassTransit = 1${excludedTags.sql}
         ORDER BY o.ToDate DESC
       `,
 
       params: [
         schoolYearRange.start, // School year start (August 1st), inclusive
         schoolYearRange.end, // School year end (August 1st the year after), exclusive
+        ...excludedTags.params, // Physical travel card tags — excluded orders
       ],
       interval: 5000, // Check every 5 seconds
       keyColumns: ['OrdersId'], // Use Order ID as unique identifier
@@ -674,6 +680,11 @@ async function monitorActiveStudentOrders() {
     appLogger.info(`Order date range: ${formatSchoolYearRange(schoolYearRange)}`);
     appLogger.info('Type 1 schools only (videregående)');
     appLogger.info('Active students only');
+    appLogger.info(
+      excludedTags.params.length > 0
+        ? `Orders tagged ${excludedTags.params.map((tag) => `"${tag}"`).join(', ')} are excluded (physical travel card)`
+        : 'No order tags are excluded (ENTUR_EXCLUDED_ORDER_TAGS is empty)'
+    );
     appLogger.info('Ordered by UpdatedTime');
     appLogger.info('Changes will be detected when:');
     appLogger.info('New orders match your criteria');

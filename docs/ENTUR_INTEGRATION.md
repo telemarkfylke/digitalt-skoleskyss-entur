@@ -14,6 +14,10 @@ ENTUR_API_URL=https://api.staging.entur.io/skoleskyss
 # Deletion (optional — see "Deleting a travel right")
 ENTUR_DELETE_DRY_RUN=true        # default true; set to "false" to actually delete
 ENTUR_REVOKE_GRACE_MINUTES=15    # default 15; delay before a lost-approval delete re-check
+
+# Excluded order tags (optional — see "Excluded order tags")
+# Comma-separated; overrides the default list. Blank excludes nothing.
+ENTUR_EXCLUDED_ORDER_TAGS=VGS Fysisk skolereisekort
 ```
 
 The integration fails fast on startup if any of these are missing.
@@ -272,6 +276,108 @@ Each rule is fully independent — changing one rule has no effect on the others
 
 After editing rules, rebuild the project: `npm run build`.
 
+## Excluded order tags (physical travel card)
+
+Some pupils get a **physical** school travel card instead of a digital one. They are marked in the
+source system with the tag `VGS Fysisk skolereisekort`, and those orders must never receive an Entur
+fare contract.
+
+The tag is a third eligibility rule, alongside `PrimaryStatus = 2` and the overridden-order filter:
+
+| Rule | Where |
+|---|---|
+| Approved order (`PrimaryStatus = 2`) | `isOrderApproved` (`src/utils/order-status.utils.ts`) |
+| Not superseded by a newer order | `filterOverriddenOrders` (`src/utils/overridden-orders.utils.ts`) |
+| No physical-travel-card tag | `filterExcludedByTag` / `buildExcludedOrderTagFilter` (`src/utils/excluded-order-tags.utils.ts`) |
+
+The tag list lives in `src/config/excluded-order-tags.config.ts` and can be overridden without a
+deploy via `ENTUR_EXCLUDED_ORDER_TAGS` (comma-separated). An empty or blank override excludes
+nothing — the escape hatch if the filter ever has to come off in a hurry.
+
+**Per order, not per pupil.** The tag sits on `dbo.OrderTags.OrderId`, so only the tagged order is
+excluded; the pupil's other, untagged orders sync normally. That matches how the source system models
+it, and the rest of the pipeline, where a fare contract is keyed on `(studentId, applicationId)`.
+
+The shared predicate is the same everywhere:
+
+```sql
+EXISTS (
+  SELECT 1
+  FROM dbo.OrderTags ot
+  INNER JOIN dbo.Tags t ON t.Id = ot.TagId
+  WHERE ot.OrderId = o.Id
+    AND t.IsDeleted = 0
+    AND t.Text IN (@paramN, ...)
+)
+```
+
+`t.IsDeleted = 0` is there so a soft-deleted tag row cannot keep denying a pupil a digital card.
+`EXISTS` rather than a `LEFT JOIN ... IS NULL` keeps the fragment from multiplying rows — the
+eligibility queries already fan out on `dbo.OrderParts`. `DatabaseService` binds parameters
+positionally, so the builders take the caller's first free `@paramN` index and the caller appends the
+returned params to its own array; `tests/services/student.service.test.ts` guards that arithmetic.
+
+### Two forms, and why
+
+**`StudentService` selects a flag; the monitor filters in the `WHERE`.** One rule, two mechanisms —
+worth understanding before changing either.
+
+| Path | Form | Builder |
+|---|---|---|
+| The three `StudentService` lookups | `CASE WHEN <predicate> THEN 1 ELSE 0 END AS ExcludedByTag` in the `SELECT` list, filtered after the query | `buildExcludedOrderTagFlag` |
+| `monitor-student-orders.ts` query | `AND NOT <predicate>` in the `WHERE` | `buildExcludedOrderTagFilter` |
+
+The monitor wants the row **gone**: a tagged order *disappearing* from its result set is what
+`CustomQueryMonitor` emits as `REMOVED_RECORDS`, which the monitor handles with its normal revoke
+path. That is how a pupil handed a physical card loses the contract they already had.
+
+`StudentService` must **not** remove the row, because `filterOverriddenOrders` recognises an order as
+superseded only while the order that *overrides* it is present in the same result set
+(`src/utils/overridden-orders.utils.ts`). Excluding tagged rows in SQL took that row away, so an
+order replaced by a tagged order stopped looking superseded and was sent to Entur — a digital
+contract for the very pupil the tag excludes. Keeping every row and filtering afterwards leaves the
+override filter with the full picture, which is correct at any override-chain depth.
+
+So the order inside `filterStudentData` is load-bearing:
+
+```
+isOrderApproved  →  filterOverriddenOrders  →  filterExcludedByTag  →  dedupeByOrderId
+```
+
+Moving the tag filter any earlier reintroduces the bug. `tests/services/student.service.test.ts`
+("tag exclusion vs. overridden orders") fails if it moves, and if the `AND NOT EXISTS` comes back.
+
+Removing rows costs the monitor nothing it had: it filters overrides per *change batch*
+(`monitor-student-orders.ts`), not over the full result set, so it already cannot see a successor
+that is not in the same batch. That is a pre-existing limitation, unrelated to tags. Every monitor
+path that could send such an order funnels through the queue drain, which re-checks with the
+corrected filter.
+
+**`getOrderOwners` is deliberately exempt.** It resolves order ids for the delete CLI, and a tagged
+order is exactly one whose contract needs deleting — filtering it would break that cleanup. Same
+reason it ignores `PrimaryStatus` and the school year window.
+
+### Queue-drain knock-on
+
+A physical travel card disqualifies two orders: the tagged one, and the untagged order it replaces.
+Either can leave `getSingleStudent` empty, which `selectQueuedOrder` reports as
+`student_not_found` — normally a Teams alert. `syncFromQueue` therefore calls
+`StudentService.hasExcludedTagOrder(studentId, range)` on that branch and retires the entry quietly
+with the physical-card reason instead.
+
+The question is asked **per student**, not per order, precisely because the replaced order is never
+itself tagged. It is scoped to the school year for the same reason the eligibility queries are: a
+tag on a long-past order says nothing about this year. The lookup is purely diagnostic — if it
+throws, the entry is retired exactly as it was before.
+
+### Limitation: tagging while the monitor is down
+
+Revocation-on-tag needs the monitor **running**. `CustomQueryMonitor` rebuilds its baseline silently
+on the first poll after a restart, so an order tagged during downtime was never in the baseline to
+disappear from — no `REMOVED_RECORDS`, no revoke, and the contract stays live in Entur. This is the
+same class of gap as the one in "Restarting the Monitor" in `README.md`, and the repair is the same:
+find the affected orders and delete them with `npm run delete-entur`.
+
 ## Queue Architecture
 
 The sync queue decouples student detection from Entur API calls, allowing controlled rollout at any pace.
@@ -394,6 +500,8 @@ something we should attempt". Retries cannot make a rejected order active again,
 only occupy a queue slot for three scheduled runs and raise a permanent-failure alert for what is a
 routine rejection. The one exception that still alerts is `student_not_found` — also retired
 immediately, since retries won't bring the student back, but unexpected enough to be worth knowing.
+An order excluded by a physical-travel-card tag looks like `student_not_found` but is routine, so it
+is retired quietly (see "Excluded order tags").
 
 ### Downtime recovery
 

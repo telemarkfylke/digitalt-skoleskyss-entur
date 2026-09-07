@@ -374,16 +374,41 @@ export class SyncManager {
           const selection = selectQueuedOrder(students, entry.ordersId);
 
           if (!selection.found) {
-            // Neither case is retryable — retries cannot make a rejected order active again, nor
-            // bring back a missing student — so the entry is retired on this first attempt rather
-            // than occupying a queue slot for maxRetries scheduled runs. A rejected order is
-            // routine and stays quiet; a vanished student is unexpected and still alerts.
-            const msg = selection.reason === 'student_not_found'
-              ? `Student ${entry.studentId} not found in DB for current school year`
-              : `Order ${entry.ordersId} is no longer active for student ${entry.studentId} (superseded, inactive, or outside the school year)`;
+            // A physical travel card disqualifies both the tagged order and the untagged order it
+            // replaces, and either can leave getSingleStudent empty — which looks like a vanished
+            // student. Ask before alerting: this is a routine, expected retirement, not the
+            // unexpected case the alert exists for.
+            //
+            // Purely diagnostic, so it must never change the outcome: on a failed lookup fall back
+            // to the old behaviour rather than letting the entry be marked failed instead of
+            // skipped.
+            let excludedByTag = false;
+            try {
+              excludedByTag = await this.studentService.hasExcludedTagOrder(entry.studentId, range);
+            } catch (tagError: any) {
+              appLogger.warn(
+                'Could not check excluded tags for student {StudentId}; retiring order {OrdersId} as usual: {ErrorMessage}',
+                entry.studentId,
+                entry.ordersId,
+                tagError?.message || String(tagError)
+              );
+            }
+
+            // None of these cases is retryable — retries cannot make a rejected order active again,
+            // bring back a missing student, or remove a tag — so the entry is retired on this first
+            // attempt rather than occupying a queue slot for maxRetries scheduled runs. A rejected
+            // or tagged order is routine and stays quiet; a vanished student is unexpected and
+            // still alerts.
+            const msg = excludedByTag
+              ? `Order ${entry.ordersId} is excluded from Entur: student ${entry.studentId} has a physical school travel card tag`
+              : selection.reason === 'student_not_found'
+                ? `Student ${entry.studentId} not found in DB for current school year`
+                : `Order ${entry.ordersId} is no longer active for student ${entry.studentId} (superseded, inactive, or outside the school year)`;
+
+            const isUnexpected = !excludedByTag && selection.reason === 'student_not_found';
 
             result.skippedCount++;
-            if (selection.reason === 'student_not_found') {
+            if (isUnexpected) {
               result.errors.push(`[${entry.ordersId}] ${msg}`);
               appLogger.warn('Queue entry {OrdersId} retired: {Message}', entry.ordersId, msg);
             } else {
@@ -392,7 +417,7 @@ export class SyncManager {
 
             if (!this.options.dryRun) {
               queueService.markSkipped(entry.ordersId, msg);
-              if (selection.reason === 'student_not_found') {
+              if (isUnexpected) {
                 await sendTeamsNotification(
                   'Queue entry retired — student not found',
                   `Student ID: ${entry.studentId}\nOrders ID: ${entry.ordersId}\nError: ${msg}`

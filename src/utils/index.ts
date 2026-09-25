@@ -11,3 +11,4 @@ export * from './queued-order-selection.utils';
 export * from './order-status.utils';
 export * from './revoke-decision.utils';
 export * from './excluded-order-tags.utils';
+export * from './alternate-locations.utils';

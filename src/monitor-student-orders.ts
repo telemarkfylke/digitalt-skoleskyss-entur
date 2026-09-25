@@ -3,7 +3,7 @@ import path from 'path';
 import { appendFile, mkdir } from 'fs/promises';
 import { DatabaseService } from './services/database.service';
 import { CustomQueryMonitor } from './services/custom-query-monitor.service';
-import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, formatSchoolYearRange, getSchoolYearRange, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction, isOrderApproved, buildExcludedOrderTagFilter } from './utils';
+import { calculateSchoolYear, filterOverriddenOrders, formatSchoolYear, formatSchoolYearRange, getSchoolYearRange, mapStudentRecordToEnturRequest, dedupeByOrderId, decideUpdateDispatchAction, isOrderApproved, buildExcludedOrderTagFilter, ALTERNATE_LOCATIONS_FLAG_SQL } from './utils';
 import { appLogger, flushLogs } from './services/logger.service';
 import { EnturApiService } from './services/entur-skoleskyss.service';
 import { QueueService } from './services/queue.service';
@@ -34,6 +34,7 @@ interface OrderRecord {
   SchoolName?: string;
   SchoolClassId?: string | number;
   SchoolClassName?: string;
+  HasAlternateLocations?: number | boolean | null;
 }
 
 interface MonitorSummary {
@@ -607,7 +608,7 @@ async function monitorActiveStudentOrders() {
           s.Name as SchoolName,
           sc.Id as SchoolClassId,
           sc.Name as SchoolClassName,
-          sc.GradeId as SchoolGradeId
+          sc.GradeId as SchoolGradeId${ALTERNATE_LOCATIONS_FLAG_SQL}
         FROM dbo.Orders o
         INNER JOIN dbo.People p ON p.Id = o.StudentId
         INNER JOIN dbo.Schools s ON s.Id = o.SchoolId
@@ -631,7 +632,7 @@ async function monitorActiveStudentOrders() {
       keyColumns: ['OrdersId'], // Use Order ID as unique identifier
       // Use updatedTime and studentUpdatedTime to detect all changes, BUT! EnTur dont need to know if a field they dont use is updated.
       // In the future if we start to use zones, we need to monitor changes in the zones fiels (currently not needed)
-      compareColumns: ['OverridesOrderId', 'StartDate', 'EndDate', 'StudentName', 'StudentMiddleName', 'StudentLastName', 'PhoneNumber', 'EmailAddress', 'SchoolId', 'SchoolName', 'SchoolClassId', 'SchoolClassName', 'SchoolGradeId', 'PrimaryStatus'] // Monitor these columns for changes
+      compareColumns: ['OverridesOrderId', 'StartDate', 'EndDate', 'StudentName', 'StudentMiddleName', 'StudentLastName', 'PhoneNumber', 'EmailAddress', 'SchoolId', 'SchoolName', 'SchoolClassId', 'SchoolClassName', 'SchoolGradeId', 'PrimaryStatus', 'HasAlternateLocations'] // Monitor these columns for changes
     };
 
     // Startup reconciliation: catch any records added to the DB while the monitor was down.

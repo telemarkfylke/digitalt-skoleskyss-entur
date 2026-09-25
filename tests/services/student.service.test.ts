@@ -226,3 +226,18 @@ describe('StudentService.hasExcludedTagOrder', () => {
     assert.equal(queries.length, 0);
   });
 });
+
+describe('StudentService alternate locations flag', () => {
+  test('every eligibility query selects HasAlternateLocations without shifting parameters', async () => {
+    const { service, queries } = makeService();
+    await service.getVideregaaendeStudents(range);
+    await service.getVideregaaendeStudentsFromClasses(range, ['1A'], ['1']);
+    await service.getSingleStudent(range, '81722');
+
+    assert.equal(queries.length, 3);
+    for (const captured of queries) {
+      assert.match(captured.sql, /END AS HasAlternateLocations/);
+      assertParametersAligned(captured);
+    }
+  });
+});

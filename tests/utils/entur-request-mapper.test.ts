@@ -133,3 +133,23 @@ describe('mapStudentRecordToEnturRequest', () => {
     assert.ok(new Date(req.validity.endDate) < new Date(req.validity.startDate));
   });
 });
+
+describe('mapStudentRecordToEnturRequest with alternate locations (utplassering)', () => {
+  test('HasAlternateLocations = 1 gives travelWindow 5-23 and keeps the calendar', () => {
+    const req = mapStudentRecordToEnturRequest(service, { ...baseRecord(), HasAlternateLocations: 1 });
+    assert.deepEqual(req.validity.travelWindow, { fromHour: 5, toHour: 23 });
+    assert.equal(req.validity.calendar?.id, 'TEL:FareDayType:SchoolDayDefaultSchool20252026');
+  });
+
+  test('accepts the flag as a boolean (mssql bit)', () => {
+    const req = mapStudentRecordToEnturRequest(service, { ...baseRecord(), HasAlternateLocations: true });
+    assert.deepEqual(req.validity.travelWindow, { fromHour: 5, toHour: 23 });
+  });
+
+  test('HasAlternateLocations = 0, null or absent gives the normal travelWindow', () => {
+    for (const HasAlternateLocations of [0, null, undefined]) {
+      const req = mapStudentRecordToEnturRequest(service, { ...baseRecord(), HasAlternateLocations });
+      assert.deepEqual(req.validity.travelWindow, { fromHour: 5, toHour: 18 });
+    }
+  });
+});

@@ -276,6 +276,14 @@ Each rule is fully independent — changing one rule has no effect on the others
 
 After editing rules, rebuild the project: `npm run build`.
 
+### Utplassering: temporary extended timeband
+
+Students on a work placement get `timeBands` 5–23 for as long as the placement is registered.
+
+- **Detection:** every eligibility query and the monitor query select `HasAlternateLocations` (`ALTERNATE_LOCATIONS_FLAG_SQL`, `src/utils/alternate-locations.utils.ts`). It is 1 when `$.AlternateLocations.Locations` in `dbo.Orders.OrderBundle` holds at least one JSON object. `null`, `[]`, a missing path and a NULL bundle all give 0. This relies on `OPENJSON`, which needs database compatibility level 130 or higher.
+- **Effect:** `getFareContractConfig(schoolId, className, hasAlternateLocations)` resolves the default and rules as usual, then replaces only `timeBands` with `EXTENDED_TIMEBANDS`. The calendar is kept.
+- **Reset:** `HasAlternateLocations` is in the monitor's `compareColumns`, so a flip in either direction is an `updated` change. It is re-posted like any other update, and because Entur keeps the newest post, that restores the normal timeband. A flip that happens while the monitor is down becomes part of the new baseline and is not re-sent, so run a live single/all sync afterwards.
+
 ## Excluded order tags (physical travel card)
 
 Some pupils get a **physical** school travel card instead of a digital one. They are marked in the

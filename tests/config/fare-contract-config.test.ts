@@ -1,6 +1,6 @@
 import { describe, test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { getFareContractConfig, fareContractRules } from '../../src/config/fare-contract-config';
+import { getFareContractConfig, fareContractRules, EXTENDED_TIMEBANDS } from '../../src/config/fare-contract-config';
 
 describe('getFareContractConfig', () => {
   before(() => {
@@ -124,5 +124,52 @@ describe('getFareContractConfig', () => {
     });
     const config = getFareContractConfig('any-school', 'any-class');
     assert.equal(config.calendarId, 'CATCH_ALL_CALENDAR');
+  });
+});
+
+describe('getFareContractConfig with alternate locations (utplassering)', () => {
+  before(() => {
+    process.env.ENTUR_DEFAULT_CALENDAR_ID = 'DEFAULT_CALENDAR';
+    process.env.ENTUR_DEFAULT_TIMEBANDS_START = '5';
+    process.env.ENTUR_DEFAULT_TIMEBANDS_END = '18';
+  });
+
+  after(() => {
+    delete process.env.ENTUR_DEFAULT_CALENDAR_ID;
+    delete process.env.ENTUR_DEFAULT_TIMEBANDS_START;
+    delete process.env.ENTUR_DEFAULT_TIMEBANDS_END;
+  });
+
+  afterEach(() => {
+    fareContractRules.length = 0;
+  });
+
+  test('extends timeBands to 5-23 and keeps the default calendar', () => {
+    const config = getFareContractConfig('school-1', 'class-A', true);
+    assert.deepEqual(config.timeBands, EXTENDED_TIMEBANDS);
+    assert.equal(config.calendarId, 'DEFAULT_CALENDAR');
+  });
+
+  test('keeps a rule calendar (e.g. unspecified) while extending the hours', () => {
+    fareContractRules.push({
+      classNamePatterns: ['FAG'],
+      config: { calendarId: undefined, timeBands: { startTime: 6, endTime: 20 } },
+    });
+    const config = getFareContractConfig('school-1', 'FAG-3VG-26', true);
+    assert.equal(config.calendarId, undefined);
+    assert.deepEqual(config.timeBands, EXTENDED_TIMEBANDS);
+  });
+
+  test('falls back to the normal timeband when the flag is off', () => {
+    assert.deepEqual(getFareContractConfig('school-1', 'class-A', false).timeBands, { startTime: 5, endTime: 18 });
+    assert.deepEqual(getFareContractConfig('school-1', 'class-A').timeBands, { startTime: 5, endTime: 18 });
+  });
+
+  test('extends even when no default timeband is configured', () => {
+    delete process.env.ENTUR_DEFAULT_TIMEBANDS_START;
+    delete process.env.ENTUR_DEFAULT_TIMEBANDS_END;
+    assert.deepEqual(getFareContractConfig('school-1', 'class-A', true).timeBands, EXTENDED_TIMEBANDS);
+    process.env.ENTUR_DEFAULT_TIMEBANDS_START = '5';
+    process.env.ENTUR_DEFAULT_TIMEBANDS_END = '18';
   });
 });

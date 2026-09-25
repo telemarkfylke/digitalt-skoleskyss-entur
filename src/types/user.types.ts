@@ -12,5 +12,6 @@ export interface StudentWithDetails {
   SchoolClassName: string;
   SchoolClassId: string;
   EmailAddress: string;
-  PhoneNumber: string; 
+  PhoneNumber: string;
+  HasAlternateLocations?: number | boolean | null; // Utplassering → extended timeband
 }

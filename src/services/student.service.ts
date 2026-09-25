@@ -1,7 +1,7 @@
 import { DatabaseService } from './database.service';
 import { StudentWithDetails } from '../types/user.types';
 import { appLogger } from './logger.service';
-import { filterOverriddenOrders, dedupeByOrderId, SchoolYearRange, formatSchoolYearRange, isOrderApproved, buildExcludedOrderTagFlag, buildExcludedOrderTagPredicate, filterExcludedByTag } from '../utils';
+import { filterOverriddenOrders, dedupeByOrderId, SchoolYearRange, formatSchoolYearRange, isOrderApproved, buildExcludedOrderTagFlag, buildExcludedOrderTagPredicate, filterExcludedByTag, ALTERNATE_LOCATIONS_FLAG_SQL } from '../utils';
 import { getExcludedOrderTags } from '../config/excluded-order-tags.config';
 
 
@@ -177,7 +177,7 @@ export class StudentService {
           s.Name as SchoolName,
           sc.Id as SchoolClassId,
           sc.Name as SchoolClassName,
-          sc.GradeId as SchoolGradeId${excludedTagFlag.sql}
+          sc.GradeId as SchoolGradeId${excludedTagFlag.sql}${ALTERNATE_LOCATIONS_FLAG_SQL}
         FROM dbo.Orders o
         INNER JOIN dbo.People p ON p.Id = o.StudentId
         INNER JOIN dbo.Schools s ON s.Id = o.SchoolId
@@ -243,7 +243,7 @@ export class StudentService {
           s.Name as SchoolName,
           sc.Id as SchoolClassId,
           sc.Name as SchoolClassName,
-          sc.GradeId as SchoolGradeId${excludedTagFlag.sql}
+          sc.GradeId as SchoolGradeId${excludedTagFlag.sql}${ALTERNATE_LOCATIONS_FLAG_SQL}
         FROM dbo.Orders o
         INNER JOIN dbo.People p ON p.Id = o.StudentId
         INNER JOIN dbo.Schools s ON s.Id = o.SchoolId
@@ -306,7 +306,7 @@ export class StudentService {
           s.Name as SchoolName,
           sc.Id as SchoolClassId,
           sc.Name as SchoolClassName,
-          sc.GradeId as SchoolGradeId${excludedTagFlag.sql}
+          sc.GradeId as SchoolGradeId${excludedTagFlag.sql}${ALTERNATE_LOCATIONS_FLAG_SQL}
         FROM dbo.Orders o
         INNER JOIN dbo.People p ON p.Id = o.StudentId
         INNER JOIN dbo.Schools s ON s.Id = o.SchoolId

@@ -205,6 +205,8 @@ export const fareContractRules: FareContractRule[] = [
 
 Each rule is independent. Within a rule, `schoolIds` and `classNamePatterns` use AND logic (both must match if both are set). Rules are evaluated top-to-bottom — first match wins. Rebuild after editing: `npm run build`.
 
+**Utplassering (work placement):** when `OrderBundle.AlternateLocations.Locations` holds at least one object, the order gets `timeBands` 5–23 (`EXTENDED_TIMEBANDS`) on top of whatever the rules resolved; the calendar is unchanged. When the source system clears `Locations`, the monitor sees `HasAlternateLocations` change and re-sends the order with the normal timeband. A change made while the monitor is down is not re-sent automatically. Fix it with a live single/all sync, as described in the monitor restart section.
+
 See `docs/ENTUR_INTEGRATION.md` for the full `OrganisationFareContractConfig` type and detailed fare contract documentation.
 
 ## Validation Usage

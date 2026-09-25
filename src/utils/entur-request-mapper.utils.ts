@@ -3,6 +3,7 @@ import { appLogger } from '../services/logger.service';
 import { formatPhoneNumberForEntur } from './entur-phonenumer.utils';
 import { getFareContractConfig } from '../config/fare-contract-config';
 import { isOrderApproved } from './order-status.utils';
+import { hasAlternateLocations } from './alternate-locations.utils';
 
 export interface EnturMappableStudentRecord {
   OrdersId: string | number;
@@ -19,6 +20,7 @@ export interface EnturMappableStudentRecord {
   SchoolName?: string;
   SchoolClassId?: string | number;
   SchoolClassName?: string;
+  HasAlternateLocations?: number | boolean | null;
 }
 
 export interface EnturRequestMappingOptions {
@@ -64,7 +66,11 @@ export const mapStudentRecordToEnturRequest = (
     );
   }
 
-  const fareConfig = getFareContractConfig(record.SchoolId, record.SchoolClassName);
+  const fareConfig = getFareContractConfig(
+    record.SchoolId,
+    record.SchoolClassName,
+    hasAlternateLocations(record)
+  );
 
   return enturService.createSkoleskyssRequest({
     studentId: String(record.StudentId),

@@ -265,7 +265,8 @@ export class SyncManager {
           SchoolId: student.SchoolId,
           SchoolName: student.SchoolName || 'Unknown School',
           SchoolClassId: student.SchoolClassId,
-          SchoolClassName: student.SchoolClassName || undefined
+          SchoolClassName: student.SchoolClassName || undefined,
+          HasAlternateLocations: student.HasAlternateLocations
         });
       } catch (error: any) {
         result.errors.push(`Failed to create request for student ${student.StudentId}: ${error.message}`);

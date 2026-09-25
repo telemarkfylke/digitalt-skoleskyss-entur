@@ -75,7 +75,20 @@ export const fareContractRules: FareContractRule[] = [
                         'MDDAN3----', 'MDDRA3----', 'MDMUS3----' ], config: { timeBands: { startTime: 5, endTime: 23 } } }
 ];
 
+// Utplassering: temporary extended timeband. Only the hours change — calendar is kept.
+export const EXTENDED_TIMEBANDS = { startTime: 5, endTime: 23 };
+
 export const getFareContractConfig = (
+  schoolId: string | number | undefined,
+  className: string | undefined,
+  hasAlternateLocations = false
+): OrganisationFareContractConfig => {
+  const config = resolveFareContractConfig(schoolId, className);
+
+  return hasAlternateLocations ? { ...config, timeBands: { ...EXTENDED_TIMEBANDS } } : config;
+};
+
+const resolveFareContractConfig = (
   schoolId: string | number | undefined,
   className: string | undefined
 ): OrganisationFareContractConfig => {

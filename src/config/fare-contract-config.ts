@@ -61,10 +61,14 @@ export const fareContractRules: FareContractRule[] = [
   // Regel for Talenthuset: Alle dager mellom 5 og 23, uavhengig av skoleårskalender.
   // 'undefined' gir en uspesifisert kalender, som betyr at alle dager er gyldige. 
   // Dette er fordi entur ikke har en kalender by default for Telemark fylkeskommune, og derfor vil alle dager være gyldige for Talenthuset.
+  // NB dette er elever som går på en annen fysik skole, men hører til talenthuset.
   { classNamePatterns: ['FAG -3PIN-26', 'FAG-3VG-26', 'FAG-3VGTEK-26', 
                         'FAG-3VGTEK-26', 'FAG-3VGELE-26', 'FAG-3VGBA-26', 
                         'FAG-3ELE-26', 'FAG-3IME-26', 'FAG-3TPLMM-26', 
                         'FAG-3ELEMO-26'], config: { calendarId: undefined, timeBands: { startTime: 5, endTime: 23 } } },
+  
+  // Regel for Talenthuset, den faktiske skolen. 
+  { schoolIds: ['7'], config: { calendarId: undefined, timeBands: { startTime: 5, endTime: 23 } } },
 
   // Regel for Toppidrett: Alle dager mellom 5 og 23, Alle skoledager.
   { schoolIds: ['9'], config: { timeBands: { startTime: 5, endTime: 23 } } },

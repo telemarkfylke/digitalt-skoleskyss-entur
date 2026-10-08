@@ -2,6 +2,7 @@ import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { StudentService } from '../../src/services/student.service';
 import { calculateSchoolYear, getSchoolYearRange } from '../../src/utils';
+import { SCHOOL_TYPE_FILTER_SQL } from '../../src/config/school-types.config';
 
 const range = getSchoolYearRange(calculateSchoolYear());
 
@@ -133,8 +134,9 @@ describe('StudentService query construction', () => {
   });
 });
 
-// Both VO (0) and VGS (1) pupils are eligible. The types are inlined, not bound, so the parameter
-// layout must be exactly what it was when only VGS was selected.
+// All VGS (1) pupils and the VO grades of Type 0 are eligible — not the rest of Type 0, which
+// includes grunnskole. The filter is inlined, not bound, so the parameter layout must be exactly
+// what it was when only VGS was selected.
 describe('StudentService school type filter', () => {
   const lookups: Array<[string, (s: StudentService) => Promise<unknown[]>]> = [
     ['getVideregaaendeStudents', (s) => s.getVideregaaendeStudents(range)],
@@ -143,12 +145,12 @@ describe('StudentService school type filter', () => {
   ];
 
   for (const [name, call] of lookups) {
-    test(`${name}: selects VO and VGS schools without adding parameters`, async () => {
+    test(`${name}: selects VGS and VO grades without adding parameters`, async () => {
       const { service, queries } = makeService();
       await call(service);
 
-      assert.match(queries[0].sql, /s\.Type IN \(0, 1\)/);
-      assert.doesNotMatch(queries[0].sql, /s\.Type = 1/);
+      assert.ok(queries[0].sql.includes(`AND ${SCHOOL_TYPE_FILTER_SQL}`));
+      assert.doesNotMatch(queries[0].sql, /s\.Type IN \(0, 1\)/);
       assertParametersAligned(queries[0]);
     });
   }

@@ -186,6 +186,27 @@ npm run monitor-orders
 # 4. Schedule the recurring drain task, then increase SYNC_QUEUE_LIMIT (or set to 0) as Entur verifies each batch
 ```
 
+### Included pupils (school types)
+
+Which pupils are synced is decided by `dbo.Schools.Type` and, for Type 0, by `dbo.SchoolClasses.GradeId`. Both live in `src/config/school-types.config.ts`:
+
+| `s.Type` | Covers | Included |
+| --- | --- | --- |
+| 1 | VGS | All pupils |
+| 0 | VO, grunnskole and more | Only classes whose `GradeId` is in `TYPE_0_INCLUDED_GRADE_IDS`, currently `1118` and `1120` (VO) |
+
+The resulting SQL (`SCHOOL_TYPE_FILTER_SQL`) is shared by every eligibility query and the monitor:
+
+```sql
+(s.Type = 1 OR (s.Type = 0 AND sc.GradeId IN ('1118', '1120')))
+```
+
+**Extending to grunnskole:** add the grunnskole `GradeId`s to `TYPE_0_INCLUDED_GRADE_IDS` and rebuild. Before you do:
+
+- Check that the excluded order tags cover those pupils' physical-card tag, if it differs from `VGS Fysisk skolereisekort`.
+- Check that the default fare contract config (calendar, time bands) fits them, or add rules.
+- Expect the monitor's startup reconciliation to post every newly eligible order at once on its next restart.
+
 ### Fare contract config
 
 `calendarId` and `timeBands` are included in every request. Default values come from `.env`. To override for specific schools or classes, add rules to `fareContractRules` in `src/config/fare-contract-config.ts`:
@@ -250,9 +271,12 @@ SELECT DISTINCT o.StudentId
 FROM dbo.Orders o
 INNER JOIN dbo.People p ON p.Id = o.StudentId
 INNER JOIN dbo.Schools s ON s.Id = o.SchoolId
+INNER JOIN dbo.SchoolClasses sc ON sc.Id = o.SchoolClassId
 INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
 WHERE o.ToDate >= @Start AND o.FromDate < @End
-  AND s.Type IN (0, 1) AND p.Discriminator LIKE 'Student' AND p.IsActive = 1
+  -- Same filter as SCHOOL_TYPE_FILTER_SQL (see "Included pupils")
+  AND (s.Type = 1 OR (s.Type = 0 AND sc.GradeId IN ('1118', '1120')))
+  AND p.Discriminator LIKE 'Student' AND p.IsActive = 1
   AND UsesMassTransit = 1
   AND (o.UpdatedTime >= @DownSince OR p.UpdatedTime >= @DownSince)
   -- Pupils with a physical school travel card must not be re-sent (see "Excluded order tags")

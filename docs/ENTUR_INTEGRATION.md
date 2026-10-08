@@ -192,6 +192,24 @@ issued, and any of these aborts the run with nothing deleted:
 is easy to truncate, and that count is the cheapest way to catch it. The parser accepts commas,
 spaces, or both, precisely so a pasted list cannot be silently cut short by the shell splitting it.
 
+## Included pupils (school types)
+
+**File:** `src/config/school-types.config.ts`
+
+`SCHOOL_TYPE_FILTER_SQL` is ANDed into all three `StudentService` eligibility queries and the monitor query, so the batch sync and the monitor always agree on who is eligible:
+
+```sql
+(s.Type = 1 OR (s.Type = 0 AND sc.GradeId IN ('1118', '1120')))
+```
+
+- **Type 1 (VGS):** all pupils.
+- **Type 0:** covers VO *and* grunnskole, so it is narrowed per class by `TYPE_0_INCLUDED_GRADE_IDS`, which is currently `1118` and `1120` (VO). Filtering per class, not per school, keeps grunnskole classes out even at a school that also runs VO.
+- The ids are inlined as validated digit-only literals, not bound parameters, so the `@paramN` numbering of each query is unchanged. An empty list falls back to `(s.Type = 1)`.
+
+**To include grunnskole (or other Type 0 grades):** add their `GradeId`s to `TYPE_0_INCLUDED_GRADE_IDS`. Before you do, check the excluded order tags and the fare contract config for those pupils. On its next restart, the monitor's startup reconciliation will post every newly eligible order at once.
+
+**Removing grades does not revoke anything by itself.** On restart, the monitor rebuilds its baseline from the new query, so orders that drop out because of a config change never show up as "removed". Revoke them with `npm run delete-entur`.
+
 ## Fare Contract Config
 
 **File:** `src/config/fare-contract-config.ts`

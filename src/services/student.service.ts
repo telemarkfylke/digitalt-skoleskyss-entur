@@ -3,6 +3,7 @@ import { StudentWithDetails } from '../types/user.types';
 import { appLogger } from './logger.service';
 import { filterOverriddenOrders, dedupeByOrderId, SchoolYearRange, formatSchoolYearRange, isOrderApproved, buildExcludedOrderTagFlag, buildExcludedOrderTagPredicate, filterExcludedByTag, ALTERNATE_LOCATIONS_FLAG_SQL } from '../utils';
 import { getExcludedOrderTags } from '../config/excluded-order-tags.config';
+import { SCHOOL_TYPE_FILTER_SQL } from '../config/school-types.config';
 
 
 export class StudentService {
@@ -185,7 +186,7 @@ export class StudentService {
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
         WHERE o.ToDate >= @param0
           AND o.FromDate < @param1
-          AND s.Type = 1
+          AND ${SCHOOL_TYPE_FILTER_SQL}
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
           AND UsesMassTransit = 1
@@ -251,7 +252,7 @@ export class StudentService {
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
         WHERE o.ToDate >= @param0
           AND o.FromDate < @param1
-          AND s.Type = 1
+          AND ${SCHOOL_TYPE_FILTER_SQL}
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
           AND sc.Name IN (${Classes.map((_, index) => `@param${index + 2}`).join(', ')})
@@ -314,7 +315,7 @@ export class StudentService {
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
         WHERE o.ToDate >= @param0
           AND o.FromDate < @param1
-          AND s.Type = 1
+          AND ${SCHOOL_TYPE_FILTER_SQL}
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
           AND p.Id = @param2

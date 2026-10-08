@@ -133,6 +133,27 @@ describe('StudentService query construction', () => {
   });
 });
 
+// Both VO (0) and VGS (1) pupils are eligible. The types are inlined, not bound, so the parameter
+// layout must be exactly what it was when only VGS was selected.
+describe('StudentService school type filter', () => {
+  const lookups: Array<[string, (s: StudentService) => Promise<unknown[]>]> = [
+    ['getVideregaaendeStudents', (s) => s.getVideregaaendeStudents(range)],
+    ['getVideregaaendeStudentsFromClasses', (s) => s.getVideregaaendeStudentsFromClasses(range, ['1A'], ['1'])],
+    ['getSingleStudent', (s) => s.getSingleStudent(range, '81722')],
+  ];
+
+  for (const [name, call] of lookups) {
+    test(`${name}: selects VO and VGS schools without adding parameters`, async () => {
+      const { service, queries } = makeService();
+      await call(service);
+
+      assert.match(queries[0].sql, /s\.Type IN \(0, 1\)/);
+      assert.doesNotMatch(queries[0].sql, /s\.Type = 1/);
+      assertParametersAligned(queries[0]);
+    });
+  }
+});
+
 // Regression suite for the bug that motivated the flag: excluding tagged orders in SQL removed the
 // overriding row, so filterOverriddenOrders stopped seeing the replaced order as superseded and it
 // was sent to Entur — a digital contract for the very pupil the tag excludes.

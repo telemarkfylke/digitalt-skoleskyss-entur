@@ -252,7 +252,7 @@ INNER JOIN dbo.People p ON p.Id = o.StudentId
 INNER JOIN dbo.Schools s ON s.Id = o.SchoolId
 INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
 WHERE o.ToDate >= @Start AND o.FromDate < @End
-  AND s.Type = 1 AND p.Discriminator LIKE 'Student' AND p.IsActive = 1
+  AND s.Type IN (0, 1) AND p.Discriminator LIKE 'Student' AND p.IsActive = 1
   AND UsesMassTransit = 1
   AND (o.UpdatedTime >= @DownSince OR p.UpdatedTime >= @DownSince)
   -- Pupils with a physical school travel card must not be re-sent (see "Excluded order tags")

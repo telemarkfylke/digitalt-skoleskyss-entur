@@ -11,6 +11,7 @@ import { sendTeamsNotification } from './services/teams-notifier.service';
 import { revokeOrderTravelRight, revokeAfterGracePeriod } from './services/entur-revoke.service';
 import { StudentService } from './services/student.service';
 import { DeferredRevokeScheduler, getRevokeGraceMs } from './services/deferred-revoke.service';
+import { SCHOOL_TYPE_FILTER_SQL } from './config/school-types.config';
 
 type ChangeType = 'new' | 'updated' | 'removed';
 
@@ -616,7 +617,7 @@ async function monitorActiveStudentOrders() {
         INNER JOIN dbo.OrderParts op ON o.Id = op.OrderId
         WHERE o.ToDate >= @param0
           AND o.FromDate < @param1
-          AND s.Type = 1
+          AND ${SCHOOL_TYPE_FILTER_SQL}
           AND p.Discriminator LIKE 'Student'
           AND p.IsActive = 1
           AND UsesMassTransit = 1${excludedTags.sql}

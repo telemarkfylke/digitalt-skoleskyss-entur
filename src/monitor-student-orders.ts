@@ -102,6 +102,13 @@ const withRetry = async <T>(
         error: errorMessage
       });
 
+      // A 4xx (other than 429) is Entur rejecting the request itself; resending the same body cannot
+      // succeed, so fail now instead of burning the remaining attempts.
+      const clientErrorStatus = Number(/HTTP (4\d\d)\b/.exec(errorMessage)?.[1]);
+      if (clientErrorStatus && clientErrorStatus !== 429) {
+        break;
+      }
+
       if (attempt < maxAttempts) {
         const backoffMs = baseDelayMs * Math.pow(2, attempt - 1);
         appLogger.warn(

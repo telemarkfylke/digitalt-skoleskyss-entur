@@ -4,6 +4,7 @@ import { formatPhoneNumberForEntur } from './entur-phonenumer.utils';
 import { getFareContractConfig } from '../config/fare-contract-config';
 import { isOrderApproved } from './order-status.utils';
 import { hasAlternateLocations } from './alternate-locations.utils';
+import { getOsloIsoDate } from './date.utils';
 
 export interface EnturMappableStudentRecord {
   OrdersId: string | number;
@@ -54,7 +55,7 @@ export const mapStudentRecordToEnturRequest = (
     primaryStatusValue !== null &&
     !isOrderApproved(primaryStatusValue);
 
-  const todayIsoDate = new Date().toISOString().split('T')[0];
+  const todayIsoDate = getOsloIsoDate();
   const effectiveEndDate = shouldOverrideEndDate ? todayIsoDate : toIsoDate(record.EndDate);
 
   if (shouldOverrideEndDate) {

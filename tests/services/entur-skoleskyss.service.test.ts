@@ -22,13 +22,37 @@ const validRequest = (): PostSkoleskyssRequest => ({
   applicationId: '1001',
   validity: {
     startDate: '2025-08-15',
-    endDate: '2026-06-15',
+    // Far future so the "endDate has already passed" check never trips on unrelated tests.
+    endDate: '2099-06-15',
     zones: [{ groupOfTariffZoneId: 'TEL:GroupOfTariffZones:1' }],
   },
   studentDetails: { phone: { number: '90000000', countryCode: '+47' } },
 });
 
 describe('validateSkoleskyssRequest', () => {
+  test('endDate that has already passed fails', () => {
+    const req = { ...validRequest(), validity: { ...validRequest().validity, endDate: '2026-06-15' } };
+    const result = service.validateSkoleskyssRequest(req, '2026-06-16');
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('has already passed')));
+  });
+
+  test('endDate equal to today passes', () => {
+    const req = { ...validRequest(), validity: { ...validRequest().validity, endDate: '2026-06-15' } };
+    const result = service.validateSkoleskyssRequest(req, '2026-06-15');
+    assert.equal(result.isValid, true);
+  });
+
+  // Regression (order 79248): at 00:00:25 Oslo on 2026-10-06 the UTC date is still 2026-10-05,
+  // and Entur rejected endDate 2026-10-05 as already passed.
+  test('defaults today to the current Oslo date', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-05T22:00:25.770Z') });
+    const req = { ...validRequest(), validity: { ...validRequest().validity, endDate: '2026-10-05' } };
+    const result = service.validateSkoleskyssRequest(req);
+    assert.equal(result.isValid, false);
+    assert.ok(result.errors.some((e) => e.includes('has already passed')));
+  });
+
   test('valid request passes', () => {
     const result = service.validateSkoleskyssRequest(validRequest());
     assert.equal(result.isValid, true);

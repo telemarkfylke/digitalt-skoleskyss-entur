@@ -1,6 +1,6 @@
 import { EnturAuthClient } from './entur-auth.service';
 import { appLogger } from './logger.service';
-import { createHarryPotterMockStudentDetails } from '../utils';
+import { createHarryPotterMockStudentDetails, getOsloIsoDate } from '../utils';
 
 export interface PostSkoleskyssRequest {
   organisationId?: number; // 27 for Farte (Not needed, EnTur got this)
@@ -280,9 +280,9 @@ export class EnturApiService {
   }
 
   /**
-   * Validate skoleskyss request before sending
+   * Validate skoleskyss request before sending. `today` (YYYY-MM-DD, Oslo time) is injectable for tests.
    */
-  public validateSkoleskyssRequest(request: PostSkoleskyssRequest): {
+  public validateSkoleskyssRequest(request: PostSkoleskyssRequest, today: string = getOsloIsoDate()): {
     isValid: boolean;
     errors: string[];
   } {
@@ -370,6 +370,13 @@ export class EnturApiService {
       if (startDate > endDate) {
         errors.push('validity.endDate must be after startDate');
       }
+    }
+
+    // Entur starts the travel right "now" and rejects any endDate that has already passed
+    // (HTTP 400 "sluttdatoen kan ikke ha passert"), so such a request must never be sent.
+    // Both values are YYYY-MM-DD, so string comparison is chronological.
+    if (request.validity?.endDate && /^\d{4}-\d{2}-\d{2}$/.test(request.validity.endDate) && request.validity.endDate < today) {
+      errors.push(`validity.endDate (${request.validity.endDate}) has already passed (today is ${today})`);
     }
 
     return {

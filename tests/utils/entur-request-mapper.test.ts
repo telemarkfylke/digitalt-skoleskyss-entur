@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EnturApiService } from '../../src/services/entur-skoleskyss.service';
 import { mapStudentRecordToEnturRequest, EnturMappableStudentRecord } from '../../src/utils/entur-request-mapper.utils';
 import { fareContractRules } from '../../src/config/fare-contract-config';
+import { getOsloIsoDate } from '../../src/utils/date.utils';
 
 let service: EnturApiService;
 
@@ -101,12 +102,23 @@ describe('mapStudentRecordToEnturRequest', () => {
   });
 
   test('overrides endDate to today when PrimaryStatus is not 2', () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getOsloIsoDate();
     const record = { ...baseRecord(), PrimaryStatus: 1 };
     const req = mapStudentRecordToEnturRequest(service, record, {
       overrideEndDateWhenPrimaryStatusNot2: true,
     });
     assert.equal(req.validity.endDate, today);
+  });
+
+  // Regression (order 79248): just after midnight in Oslo the UTC date is still yesterday, and an
+  // override to the UTC date was rejected by Entur as an already-passed endDate.
+  test('override uses the Oslo date just after midnight, not the UTC date', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-05T22:00:25.770Z') });
+    const record = { ...baseRecord(), PrimaryStatus: 1 };
+    const req = mapStudentRecordToEnturRequest(service, record, {
+      overrideEndDateWhenPrimaryStatusNot2: true,
+    });
+    assert.equal(req.validity.endDate, '2026-10-06');
   });
 
   test('does not override endDate when PrimaryStatus is 2', () => {
@@ -123,7 +135,7 @@ describe('mapStudentRecordToEnturRequest', () => {
   // produce an invalid endDate < startDate pair. This is intentionally not fixed
   // here — the mapper's job is just to apply the override; validation catches it.
   test('overriding endDate to today can produce endDate before startDate when StartDate is in the future', () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getOsloIsoDate();
     const record = { ...baseRecord(), StartDate: '2999-01-01', PrimaryStatus: 1 };
     const req = mapStudentRecordToEnturRequest(service, record, {
       overrideEndDateWhenPrimaryStatusNot2: true,
